@@ -725,8 +725,13 @@ function artifactPage(artifact) {
       <aside class="state-panel">
         <div class="panel-header">
           <h2>执行状态</h2>
-          <span id="statusLabel" class="status">${escapeHtml(artifact.statusLabel)}</span>
+          <span id="statusLabel" class="status" data-status="${escapeHtml(artifact.status)}">${escapeHtml(artifact.statusLabel)}</span>
         </div>
+        <label class="status-control">
+          <span>当前状态</span>
+          <select id="statusSelect"></select>
+        </label>
+        <div id="stateFeedback" class="state-feedback" role="status" aria-live="polite"></div>
         <section>
           <h3>阶段</h3>
           <div id="checkpoints" class="checkpoints"></div>
@@ -741,19 +746,27 @@ function artifactPage(artifact) {
         </section>
         <section>
           <h3>导出</h3>
-          <button id="copyState" type="button">复制状态 JSON</button>
+          <div class="panel-actions">
+            <button id="copyMarkdown" type="button">复制 Markdown 状态</button>
+            <button id="copyState" type="button">复制状态 JSON</button>
+          </div>
         </section>
       </aside>
     </main>
     <script>
       const artifactId = ${JSON.stringify(artifact.id)};
+      const artifactTitle = ${JSON.stringify(artifact.title)};
       const checkpoints = document.querySelector("#checkpoints");
       const notes = document.querySelector("#notes");
       const statusLabel = document.querySelector("#statusLabel");
+      const statusSelect = document.querySelector("#statusSelect");
+      const stateFeedback = document.querySelector("#stateFeedback");
       const noteForm = document.querySelector("#noteForm");
       const noteText = document.querySelector("#noteText");
+      const copyMarkdown = document.querySelector("#copyMarkdown");
       const copyState = document.querySelector("#copyState");
       const statusLabels = ${JSON.stringify(STATUS_LABELS)};
+      const statusOptions = Object.keys(statusLabels);
       let state = null;
 
       function escapeHtml(value) {
@@ -769,24 +782,44 @@ function artifactPage(artifact) {
         return value ? new Date(value).toLocaleString() : "";
       }
 
+      function setFeedback(message, tone = "") {
+        stateFeedback.textContent = message || "";
+        stateFeedback.className = "state-feedback" + (tone ? " " + tone : "");
+      }
+
+      function renderStatusOptions() {
+        statusSelect.innerHTML = statusOptions.map((status) => \`
+          <option value="\${escapeHtml(status)}">\${escapeHtml(statusLabels[status] || status)}</option>
+        \`).join("");
+      }
+
       function renderState() {
-        statusLabel.textContent = statusLabels[state.status] || state.status || "in-progress";
+        const status = state.status || "in-progress";
+        statusLabel.textContent = statusLabels[status] || status;
+        statusLabel.dataset.status = status;
+        statusSelect.value = status;
         if (!state.checkpoints.length) {
-          checkpoints.innerHTML = '<div class="empty compact">没有阶段。可在 state.json 中添加 checkpoints。</div>';
+          checkpoints.innerHTML = '<div class="empty compact">这个 artifact 没有配置阶段，适合作为资料查看和备注沉淀。</div>';
         } else {
           checkpoints.innerHTML = state.checkpoints.map((item) => \`
-            <label class="checkpoint">
-              <input type="checkbox" data-id="\${escapeHtml(item.id)}" \${item.done ? "checked" : ""}>
-              <span>
-                <strong>\${escapeHtml(item.title)}</strong>
-                <small>\${item.doneAt ? "完成于 " + escapeHtml(formatDate(item.doneAt)) : "未完成"}\${item.note ? " · " + escapeHtml(item.note) : ""}</small>
-              </span>
-            </label>
+            <article class="checkpoint">
+              <label class="checkpoint-row">
+                <input type="checkbox" data-id="\${escapeHtml(item.id)}" \${item.done ? "checked" : ""}>
+                <span>
+                  <strong>\${escapeHtml(item.title)}</strong>
+                  <small>\${item.doneAt ? "完成于 " + escapeHtml(formatDate(item.doneAt)) : "未完成"}</small>
+                </span>
+              </label>
+              <div class="checkpoint-note">
+                <textarea rows="2" data-note-id="\${escapeHtml(item.id)}" placeholder="阶段备注">\${escapeHtml(item.note || "")}</textarea>
+                <button type="button" class="checkpoint-note-save" data-id="\${escapeHtml(item.id)}">保存</button>
+              </div>
+            </article>
           \`).join("");
         }
 
         if (!state.notes.length) {
-          notes.innerHTML = '<div class="empty compact">暂无备注。</div>';
+          notes.innerHTML = '<div class="empty compact">暂无备注。可以记录 review 结论、阻塞点或下一步动作。</div>';
         } else {
           notes.innerHTML = state.notes.slice().reverse().map((item) => \`
             <article class="note">
@@ -797,10 +830,55 @@ function artifactPage(artifact) {
         }
       }
 
+      async function fetchJson(url, options = {}) {
+        const response = await fetch(url, options);
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(data.error || "请求失败，请稍后重试。");
+        }
+        return data;
+      }
+
       async function loadState() {
-        const response = await fetch(\`/api/artifacts/\${encodeURIComponent(artifactId)}/state\`);
-        state = await response.json();
+        setFeedback("正在加载状态...");
+        state = await fetchJson(\`/api/artifacts/\${encodeURIComponent(artifactId)}/state\`);
         renderState();
+        setFeedback("");
+      }
+
+      async function saveState(nextState, successMessage) {
+        state = await fetchJson(\`/api/artifacts/\${encodeURIComponent(artifactId)}/state\`, {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify(nextState)
+        });
+        renderState();
+        setFeedback(successMessage || "已保存。");
+        setTimeout(() => {
+          setFeedback("");
+        }, 1400);
+      }
+
+      function withHistory(nextState, event) {
+        return {
+          ...nextState,
+          history: [
+            ...(Array.isArray(nextState.history) ? nextState.history : []),
+            {
+              at: new Date().toISOString(),
+              ...event
+            }
+          ]
+        };
+      }
+
+      function renderLoadError(error) {
+        checkpoints.innerHTML = '<div class="empty compact error">状态加载失败：' + escapeHtml(error.message) + '</div>';
+        notes.innerHTML = '<div class="empty compact">状态加载成功后会显示备注。</div>';
+        stateFeedback.className = "state-feedback error";
+        stateFeedback.innerHTML = '状态加载失败。<button id="retryState" type="button">重试</button>';
       }
 
       checkpoints.addEventListener("change", async (event) => {
@@ -809,32 +887,157 @@ function artifactPage(artifact) {
           return;
         }
         const checkpointId = target.dataset.id;
-        const response = await fetch(\`/api/artifacts/\${encodeURIComponent(artifactId)}/checkpoints/\${encodeURIComponent(checkpointId)}/toggle\`, {
-          method: "POST"
-        });
-        state = await response.json();
-        renderState();
+        try {
+          state = await fetchJson(\`/api/artifacts/\${encodeURIComponent(artifactId)}/checkpoints/\${encodeURIComponent(checkpointId)}/toggle\`, {
+            method: "POST"
+          });
+          renderState();
+          setFeedback("阶段状态已更新。");
+          setTimeout(() => {
+            setFeedback("");
+          }, 1400);
+        } catch (error) {
+          target.checked = !target.checked;
+          setFeedback(error.message, "error");
+        }
+      });
+
+      checkpoints.addEventListener("click", async (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLButtonElement) || !target.classList.contains("checkpoint-note-save")) {
+          return;
+        }
+        const checkpointId = target.dataset.id;
+        const textarea = [...checkpoints.querySelectorAll("textarea[data-note-id]")]
+          .find((item) => item.dataset.noteId === checkpointId);
+        const checkpoint = state.checkpoints.find((item) => item.id === checkpointId);
+        if (!checkpoint || !textarea) {
+          return;
+        }
+        const note = textarea.value.trim();
+        if (checkpoint.note === note) {
+          setFeedback("阶段备注没有变化。");
+          return;
+        }
+        target.disabled = true;
+        try {
+          const nextState = {
+            ...state,
+            checkpoints: state.checkpoints.map((item) => item.id === checkpointId ? { ...item, note } : item)
+          };
+          await saveState(withHistory(nextState, {
+            type: "checkpoint.note.updated",
+            checkpointId
+          }), "阶段备注已保存。");
+        } catch (error) {
+          setFeedback(error.message, "error");
+        } finally {
+          target.disabled = false;
+        }
+      });
+
+      statusSelect.addEventListener("change", async () => {
+        if (!state) {
+          setFeedback("状态还没有加载完成。", "error");
+          return;
+        }
+        const nextStatus = statusSelect.value;
+        const previousStatus = state.status || "in-progress";
+        if (nextStatus === previousStatus) {
+          return;
+        }
+        statusSelect.disabled = true;
+        try {
+          const nextState = withHistory({
+            ...state,
+            status: nextStatus
+          }, {
+            type: "status.changed",
+            from: previousStatus,
+            to: nextStatus
+          });
+          await saveState(nextState, "状态已更新。");
+        } catch (error) {
+          statusSelect.value = previousStatus;
+          setFeedback(error.message, "error");
+        } finally {
+          statusSelect.disabled = false;
+        }
       });
 
       noteForm.addEventListener("submit", async (event) => {
         event.preventDefault();
+        if (!state) {
+          setFeedback("状态还没有加载完成。", "error");
+          return;
+        }
         const text = noteText.value.trim();
         if (!text) {
           return;
         }
-        const response = await fetch(\`/api/artifacts/\${encodeURIComponent(artifactId)}/notes\`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({ text })
-        });
-        state = await response.json();
-        noteText.value = "";
-        renderState();
+        try {
+          state = await fetchJson(\`/api/artifacts/\${encodeURIComponent(artifactId)}/notes\`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({ text })
+          });
+          noteText.value = "";
+          renderState();
+          setFeedback("备注已保存。");
+          setTimeout(() => {
+            setFeedback("");
+          }, 1400);
+        } catch (error) {
+          setFeedback(error.message, "error");
+        }
+      });
+
+      function toMarkdown() {
+        const lines = [
+          "# " + artifactTitle,
+          "",
+          "- 状态：" + (statusLabels[state.status] || state.status || "未知")
+        ];
+
+        if (state.checkpoints.length) {
+          lines.push("", "## 阶段");
+          for (const item of state.checkpoints) {
+            lines.push("- [" + (item.done ? "x" : " ") + "] " + item.title);
+            if (item.note) {
+              lines.push("  - 备注：" + item.note);
+            }
+          }
+        }
+
+        if (state.notes.length) {
+          lines.push("", "## 备注");
+          for (const item of state.notes) {
+            lines.push("- " + (item.at ? formatDate(item.at) + "：" : "") + item.text);
+          }
+        }
+
+        return lines.join("\\n");
+      }
+
+      copyMarkdown.addEventListener("click", async () => {
+        if (!state) {
+          setFeedback("状态还没有加载完成。", "error");
+          return;
+        }
+        await navigator.clipboard.writeText(toMarkdown());
+        copyMarkdown.textContent = "已复制";
+        setTimeout(() => {
+          copyMarkdown.textContent = "复制 Markdown 状态";
+        }, 1200);
       });
 
       copyState.addEventListener("click", async () => {
+        if (!state) {
+          setFeedback("状态还没有加载完成。", "error");
+          return;
+        }
         await navigator.clipboard.writeText(JSON.stringify(state, null, 2));
         copyState.textContent = "已复制";
         setTimeout(() => {
@@ -842,9 +1045,14 @@ function artifactPage(artifact) {
         }, 1200);
       });
 
-      loadState().catch((error) => {
-        checkpoints.innerHTML = '<div class="empty compact">状态加载失败：' + escapeHtml(error.message) + '</div>';
+      stateFeedback.addEventListener("click", (event) => {
+        if (event.target instanceof HTMLButtonElement && event.target.id === "retryState") {
+          loadState().catch(renderLoadError);
+        }
       });
+
+      renderStatusOptions();
+      loadState().catch(renderLoadError);
     </script>
   `);
 }
@@ -899,6 +1107,11 @@ function pageShell(title, body) {
     textarea:focus {
       border-color: var(--accent);
       outline: none;
+    }
+    button:disabled,
+    select:disabled {
+      cursor: wait;
+      opacity: 0.65;
     }
     code {
       font-family: "Cascadia Code", Consolas, monospace;
@@ -1168,6 +1381,36 @@ function pageShell(title, body) {
       gap: 12px;
       margin-bottom: 18px;
     }
+    .status-control {
+      display: grid;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .status-control select,
+    .checkpoint-note textarea {
+      width: 100%;
+      min-height: 38px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--panel);
+      color: var(--text);
+      padding: 8px 10px;
+    }
+    .state-feedback {
+      min-height: 20px;
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .state-feedback.error {
+      color: var(--blocked);
+    }
+    .state-feedback button {
+      margin-left: 8px;
+      padding: 4px 8px;
+    }
     .state-panel section {
       border-top: 1px solid var(--border);
       padding-top: 16px;
@@ -1179,18 +1422,36 @@ function pageShell(title, body) {
     }
     .checkpoint {
       display: grid;
-      grid-template-columns: 18px 1fr;
-      gap: 10px;
-      align-items: start;
+      gap: 9px;
       border: 1px solid var(--border);
       border-radius: 8px;
       padding: 10px;
+    }
+    .checkpoint-row {
+      display: grid;
+      grid-template-columns: 18px 1fr;
+      gap: 10px;
+      align-items: start;
     }
     .checkpoint small {
       display: block;
       color: var(--muted);
       line-height: 1.45;
       margin-top: 2px;
+    }
+    .checkpoint-note {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: start;
+      padding-left: 28px;
+    }
+    .checkpoint-note textarea {
+      min-height: 58px;
+      resize: vertical;
+    }
+    .checkpoint-note-save {
+      min-width: 58px;
     }
     .notes {
       display: grid;
@@ -1211,6 +1472,10 @@ function pageShell(title, body) {
       margin: 6px 0 0;
     }
     #noteForm {
+      display: grid;
+      gap: 8px;
+    }
+    .panel-actions {
       display: grid;
       gap: 8px;
     }
@@ -1252,6 +1517,13 @@ function pageShell(title, body) {
       .active-filters {
         justify-content: flex-start;
         margin-top: 8px;
+      }
+      .checkpoint-note {
+        grid-template-columns: 1fr;
+        padding-left: 0;
+      }
+      .checkpoint-note-save {
+        justify-self: start;
       }
     }
     @media (prefers-color-scheme: dark) {

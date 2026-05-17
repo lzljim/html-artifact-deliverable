@@ -66,6 +66,7 @@ Default behavior:
 - Artifact root: `~/.codex/html-artifacts`
 - Host: `127.0.0.1`
 - Port: `8787`
+- Detail pages provide status editing, checkpoint toggles, per-checkpoint notes, artifact notes, and JSON/Markdown status export.
 
 Use explicit flags when needed:
 

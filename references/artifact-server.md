@@ -151,12 +151,15 @@ The included MVP Node.js service provides:
 GET  /
 GET  /artifacts/:id
 GET  /api/artifacts
+GET  /api/artifacts/search
 GET  /api/artifacts/:id
 GET  /api/artifacts/:id/state
 PUT  /api/artifacts/:id/state
 POST /api/artifacts/:id/checkpoints/:checkpointId/toggle
 POST /api/artifacts/:id/notes
 ```
+
+The artifact detail page lets reviewers edit status, toggle checkpoints, maintain checkpoint notes, add artifact notes, and copy the current state as JSON or Markdown.
 
 MVP storage should be JSON files, not a database. Use atomic writes for `state.json` when possible.
 
