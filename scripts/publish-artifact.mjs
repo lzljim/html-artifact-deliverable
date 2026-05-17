@@ -31,6 +31,8 @@ function parseArgs(argv) {
       args.type = argv[++index];
     } else if (arg === "--tag") {
       args.tags.push(argv[++index]);
+    } else if (arg === "--collection") {
+      args.collection = argv[++index];
     } else if (arg === "--checkpoint") {
       args.checkpoints.push(argv[++index]);
     } else if (arg === "--no-auto-checkpoints") {
@@ -49,6 +51,7 @@ function printHelp() {
 
 Examples:
   node ${script} --html docs/ai/plan.html
+  node ${script} --html report.html --collection metadata-upgrade:"Metadata Upgrade"
   node ${script} --html report.html --checkpoint research:调研完成 --checkpoint verification:验证完成
   node ${script} --html notes.html --no-auto-checkpoints
 
@@ -58,7 +61,8 @@ Checkpoint format:
 Automatic behavior:
   title:       <title>, then <h1>, then file name
   type:        inferred from title/path/content unless --type is set
-  checkpoints: inferred from phase-style headings unless --checkpoint is set`);
+  checkpoints: inferred from phase-style headings unless --checkpoint is set
+  collection:  optional <id>:<title> project grouping`);
 }
 
 function slugify(value) {
@@ -261,6 +265,58 @@ function parseCheckpoint(value) {
   };
 }
 
+function parseCollection(value) {
+  if (!value) {
+    return null;
+  }
+  const separatorIndex = value.indexOf(":");
+  if (separatorIndex === -1) {
+    const id = slugify(value);
+    return {
+      id,
+      title: value
+    };
+  }
+  const id = slugify(value.slice(0, separatorIndex));
+  return {
+    id,
+    title: value.slice(separatorIndex + 1).trim() || id
+  };
+}
+
+async function updateCollectionFile(root, collection, artifactId) {
+  if (!collection) {
+    return;
+  }
+  const collectionPath = path.join(root, "collection.json");
+  const raw = await readJson(collectionPath, {
+    collections: []
+  });
+  const collections = Array.isArray(raw) ? raw : raw.collections || [];
+  let item = collections.find((entry) => slugify(entry.id || entry.title || entry.name || "") === collection.id);
+  if (!item) {
+    item = {
+      id: collection.id,
+      title: collection.title,
+      description: "",
+      artifactIds: [],
+      tags: [],
+      createdAt: new Date().toISOString()
+    };
+    collections.push(item);
+  }
+  item.id = collection.id;
+  item.title = item.title || collection.title;
+  item.artifactIds = Array.isArray(item.artifactIds) ? item.artifactIds.map(String) : [];
+  if (!item.artifactIds.includes(artifactId)) {
+    item.artifactIds.push(artifactId);
+  }
+  item.updatedAt = new Date().toISOString();
+  await writeJson(collectionPath, {
+    collections
+  });
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) {
@@ -280,6 +336,7 @@ async function main() {
   const title = args.title || extractTitle(html, htmlPath);
   const id = args.id ? slugify(args.id) : defaultId(title, htmlPath);
   const type = args.type || inferType(title, htmlPath, html);
+  const collection = parseCollection(args.collection);
   const checkpoints = args.checkpoints.length
     ? args.checkpoints.map(parseCheckpoint)
     : args.autoCheckpoints ? extractCheckpoints(html) : [];
@@ -305,6 +362,9 @@ async function main() {
     entry: "index.html",
     tags: args.tags
   };
+  if (collection) {
+    artifact.collection = collection;
+  }
 
   await writeJson(path.join(artifactDir, "artifact.json"), artifact);
 
@@ -332,10 +392,13 @@ async function main() {
     await writeJson(statePath, state);
   }
 
+  await updateCollectionFile(root, collection, id);
+
   console.log(JSON.stringify({
     id,
     title,
     type,
+    collection,
     checkpointCount: checkpoints.length,
     artifactDir,
     url: `/artifacts/${encodeURIComponent(id)}`

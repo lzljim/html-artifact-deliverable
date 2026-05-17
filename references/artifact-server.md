@@ -42,6 +42,12 @@ Publish an existing HTML file:
 node scripts/publish-artifact.mjs --html <file.html> --title "<title>" --type implementation-plan --checkpoint research:调研完成
 ```
 
+Publish into a collection:
+
+```bash
+node scripts/publish-artifact.mjs --html <file.html> --collection metadata-upgrade:"Metadata Upgrade"
+```
+
 The publish script copies the input file to `<artifact-root>/<id>/index.html`, writes `artifact.json`, and initializes `state.json` if it does not exist.
 
 For quick publishing, these fields are inferred when omitted:
@@ -49,6 +55,7 @@ For quick publishing, these fields are inferred when omitted:
 - `title`: `<title>`, then `<h1>`, then file name.
 - `type`: title/path/content keywords such as `implementation-plan`, `architecture-explainer`, `code-review`, `research-report`, or `custom-editor`.
 - `checkpoints`: phase-style HTML headings, including paired `.phase-id` blocks followed by `<h3>` and standalone headings like `阶段 1：旧/新 Schema 生成`.
+- `collection`: explicit `--collection <id>:<title>` writes both `artifact.json.collection` and root `collection.json`.
 
 Pass `--checkpoint` to use explicit checkpoints instead of inferred ones, or `--no-auto-checkpoints` to publish without generated checkpoints.
 
@@ -87,6 +94,7 @@ Use one directory per artifact:
 
 ```text
 artifacts/
+  collection.json
   2026-05-17-html-skill-plan/
     index.html
     artifact.json
@@ -109,9 +117,35 @@ artifacts/
     "thread": "optional-thread-label"
   },
   "entry": "index.html",
+  "collection": {
+    "id": "metadata-upgrade",
+    "title": "Metadata Upgrade"
+  },
   "tags": ["skill", "artifact-server"]
 }
 ```
+
+Root `collection.json` groups related artifacts:
+
+```json
+{
+  "collections": [
+    {
+      "id": "metadata-upgrade",
+      "title": "Metadata Upgrade",
+      "description": "Page metadata upgrade research, plans, reviews, and verification.",
+      "artifactIds": [
+        "industry-research",
+        "governance-plan",
+        "review-summary"
+      ],
+      "tags": ["metadata", "upgrade"]
+    }
+  ]
+}
+```
+
+Artifacts can also declare their collection directly in `artifact.json`. The server merges root `collection.json` membership and artifact metadata membership, then derives collection progress from child artifact checkpoints.
 
 `state.json` stores mutable state:
 
@@ -191,6 +225,8 @@ GET  /
 GET  /artifacts/:id
 GET  /api/artifacts
 GET  /api/artifacts/search
+GET  /api/collections
+GET  /api/collections/:id/markdown
 GET  /api/artifacts/:id
 GET  /api/artifacts/:id/state
 PUT  /api/artifacts/:id/state
@@ -200,7 +236,7 @@ POST /api/artifacts/:id/notes/:noteId/resolve
 POST /api/artifacts/:id/notes/:noteId/reopen
 ```
 
-The artifact detail page lets reviewers edit status, toggle checkpoints, maintain checkpoint notes, add artifact comments, filter comments by phase, resolve or reopen comments, and copy the current state or comment summary as JSON/Markdown.
+The dashboard groups collection artifacts and shows aggregate progress. The artifact detail page lets reviewers edit status, toggle checkpoints, maintain checkpoint notes, add artifact comments, filter comments by phase, resolve or reopen comments, and copy the current state or comment summary as JSON/Markdown.
 
 MVP storage should be JSON files, not a database. Use atomic writes for `state.json` when possible.
 

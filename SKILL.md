@@ -73,6 +73,7 @@ Default behavior:
 - Host: `127.0.0.1`
 - Port: `8787`
 - Detail pages provide status editing, checkpoint toggles, per-checkpoint notes, reviewer comments, resolve/reopen review flow, and JSON/Markdown status export.
+- The dashboard can group related artifacts into collections with aggregate progress and collection-level Markdown export.
 
 Use explicit flags when needed:
 
@@ -94,11 +95,18 @@ Publish an existing HTML file into the artifact root:
 node scripts/publish-artifact.mjs --html <file.html> --title "<title>" --type implementation-plan --checkpoint research:调研完成
 ```
 
+Publish into a collection:
+
+```bash
+node scripts/publish-artifact.mjs --html <file.html> --collection project-id:"Project Title"
+```
+
 When `--title`, `--type`, or `--checkpoint` are omitted, the publish script infers them from the HTML:
 
 - Title: `<title>` first, then `<h1>`, then the file name.
 - Type: inferred from title, path, and document text.
 - Checkpoints: inferred from phase headings such as `阶段 0` / `阶段 1A`.
+- Collection: explicit through `--collection`; the script writes artifact metadata and updates root `collection.json`.
 
 Only use `--host 0.0.0.0` after the user explicitly wants LAN sharing and has accepted the privacy risk. Avoid LAN sharing without a token for artifacts that include source snippets, local paths, logs, customer data, credentials, or internal URLs.
 
@@ -110,6 +118,7 @@ Only use `--host 0.0.0.0` after the user explicitly wants LAN sharing and has ac
 - Reports: executive conclusion first, evidence sections, timeline or matrix when chronology or tradeoffs matter.
 - Editors: dominant work surface, prefilled user data, immediate validation, keyboard-friendly controls, export bar.
 - Published artifacts: `index.html` for stable content, `artifact.json` for metadata, `state.json` for mutable checkpoints and notes.
+- Collections: root `collection.json` groups multiple artifact ids into one project/topic and derives progress from child checkpoints.
 
 ## Guardrails
 

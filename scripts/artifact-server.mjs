@@ -73,6 +73,8 @@ Routes:
   GET  /artifacts/:id
   GET  /api/artifacts
   GET  /api/artifacts/search
+  GET  /api/collections
+  GET  /api/collections/:id/markdown
   GET  /api/artifacts/:id
   GET  /api/artifacts/:id/state
   PUT  /api/artifacts/:id/state
@@ -84,6 +86,17 @@ Routes:
 
 function isArtifactId(value) {
   return /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(value);
+}
+
+function slugify(value) {
+  const slug = String(value || "")
+    .normalize("NFKD")
+    .replace(/[^\w.-]+/g, "-")
+    .replace(/_+/g, "-")
+    .replace(/-{2,}/g, "-")
+    .replace(/^-|-$/g, "")
+    .toLowerCase();
+  return slug || "collection";
 }
 
 function escapeHtml(value) {
@@ -314,6 +327,30 @@ function createStore(root) {
     return artifacts;
   }
 
+  async function readCollectionConfig() {
+    const raw = await readJson(path.join(absoluteRoot, "collection.json"), {
+      collections: []
+    });
+    const collections = Array.isArray(raw) ? raw : raw.collections;
+    return Array.isArray(collections)
+      ? collections.map(normalizeCollectionConfig).filter((item) => item.id)
+      : [];
+  }
+
+  async function listCollections() {
+    const artifacts = await listArtifacts();
+    const configs = await readCollectionConfig();
+    return buildCollections(configs, artifacts);
+  }
+
+  async function getCollectionMarkdown(id) {
+    const collection = (await listCollections()).find((item) => item.id === id);
+    if (!collection) {
+      return null;
+    }
+    return collectionMarkdown(collection);
+  }
+
   async function searchArtifacts(filters) {
     const allArtifacts = await listArtifacts();
     let items = allArtifacts;
@@ -349,6 +386,11 @@ function createStore(root) {
     }
     if (filters.tag) {
       items = items.filter((artifact) => artifact.tags.includes(filters.tag));
+    }
+    if (filters.collection) {
+      const collection = (await listCollections()).find((item) => item.id === filters.collection);
+      const artifactIds = new Set((collection?.artifacts || []).map((artifact) => artifact.id));
+      items = items.filter((artifact) => artifactIds.has(artifact.id));
     }
 
     items = items.slice().sort(compareArtifacts(filters.sort || "updated-desc"));
@@ -471,6 +513,8 @@ function createStore(root) {
     ensureRoot,
     listArtifacts,
     searchArtifacts,
+    listCollections,
+    getCollectionMarkdown,
     getArtifact,
     getState,
     putState,
@@ -503,6 +547,7 @@ function normalizeArtifact(metadata, state, fallbackId) {
     source: metadata.source || {},
     entry: metadata.entry || "index.html",
     tags: Array.isArray(metadata.tags) ? metadata.tags.map(String) : [],
+    collection: normalizeArtifactCollection(metadata.collection),
     status: state.status || "in-progress",
     statusLabel: statusLabel(state.status || "in-progress"),
     checkpointCount,
@@ -510,6 +555,133 @@ function normalizeArtifact(metadata, state, fallbackId) {
     progressPercent: checkpointCount ? Math.round((doneCheckpointCount / checkpointCount) * 100) : null,
     noteCount: state.notes.length
   };
+}
+
+function normalizeArtifactCollection(value) {
+  if (!value) {
+    return null;
+  }
+  if (typeof value === "string") {
+    return {
+      id: slugify(value),
+      title: value
+    };
+  }
+  const rawId = value.id || value.title || value.name || "";
+  if (!rawId) {
+    return null;
+  }
+  const id = slugify(rawId);
+  return {
+    id,
+    title: String(value.title || value.name || value.id || id)
+  };
+}
+
+function normalizeCollectionConfig(value) {
+  const rawId = value?.id || value?.title || value?.name || "";
+  if (!rawId) {
+    return null;
+  }
+  const id = slugify(rawId);
+  return {
+    id,
+    title: String(value.title || value.name || value.id || id),
+    description: String(value.description || ""),
+    tags: Array.isArray(value.tags) ? value.tags.map(String) : [],
+    artifactIds: Array.isArray(value.artifactIds) ? value.artifactIds.map(String) : [],
+    createdAt: value.createdAt || null,
+    updatedAt: value.updatedAt || value.createdAt || null
+  };
+}
+
+function buildCollections(configs, artifacts) {
+  const collections = new Map();
+  for (const config of configs) {
+    collections.set(config.id, {
+      ...config,
+      artifactIds: [...config.artifactIds]
+    });
+  }
+
+  for (const artifact of artifacts) {
+    if (!artifact.collection?.id) {
+      continue;
+    }
+    const existing = collections.get(artifact.collection.id) || {
+      id: artifact.collection.id,
+      title: artifact.collection.title || artifact.collection.id,
+      description: "",
+      tags: [],
+      artifactIds: [],
+      createdAt: null,
+      updatedAt: null
+    };
+    if (!existing.artifactIds.includes(artifact.id)) {
+      existing.artifactIds.push(artifact.id);
+    }
+    if (artifact.collection.title && (!existing.title || existing.title === existing.id)) {
+      existing.title = artifact.collection.title;
+    }
+    collections.set(existing.id, existing);
+  }
+
+  const artifactById = new Map(artifacts.map((artifact) => [artifact.id, artifact]));
+  return [...collections.values()].map((collection) => {
+    const collectionArtifacts = collection.artifactIds
+      .map((id) => artifactById.get(id))
+      .filter(Boolean);
+    const checkpointCount = collectionArtifacts.reduce((sum, item) => sum + item.checkpointCount, 0);
+    const doneCheckpointCount = collectionArtifacts.reduce((sum, item) => sum + item.doneCheckpointCount, 0);
+    const noteCount = collectionArtifacts.reduce((sum, item) => sum + item.noteCount, 0);
+    const updatedAt = collection.updatedAt
+      || collectionArtifacts.map((item) => item.updatedAt).filter(Boolean).sort().at(-1)
+      || null;
+    return {
+      id: collection.id,
+      title: collection.title,
+      description: collection.description,
+      tags: collection.tags,
+      createdAt: collection.createdAt,
+      updatedAt,
+      artifactCount: collectionArtifacts.length,
+      checkpointCount,
+      doneCheckpointCount,
+      progressPercent: checkpointCount ? Math.round((doneCheckpointCount / checkpointCount) * 100) : null,
+      noteCount,
+      artifacts: collectionArtifacts
+    };
+  }).filter((collection) => collection.artifactCount > 0)
+    .sort((left, right) => String(right.updatedAt || "").localeCompare(String(left.updatedAt || ""))
+      || left.title.localeCompare(right.title, "zh-CN"));
+}
+
+function collectionMarkdown(collection) {
+  const lines = [
+    `# ${collection.title}`,
+    "",
+    collection.description || "",
+    "",
+    `- Artifact 数量：${collection.artifactCount}`,
+    `- 阶段进度：${collection.checkpointCount ? `${collection.doneCheckpointCount}/${collection.checkpointCount}` : "0/0"}`,
+    `- 评论数量：${collection.noteCount}`,
+    ""
+  ].filter((line, index, array) => line || array[index - 1] !== "");
+
+  for (const artifact of collection.artifacts) {
+    const progress = artifact.checkpointCount
+      ? `${artifact.doneCheckpointCount}/${artifact.checkpointCount} (${artifact.progressPercent}%)`
+      : "无阶段";
+    lines.push(`## ${artifact.title}`, "");
+    lines.push(`- ID：${artifact.id}`);
+    lines.push(`- 类型：${artifact.typeLabel}`);
+    lines.push(`- 状态：${artifact.statusLabel}`);
+    lines.push(`- 阶段进度：${progress}`);
+    lines.push(`- 评论数量：${artifact.noteCount}`);
+    lines.push("");
+  }
+
+  return `${lines.join("\n").replace(/\n{3,}/g, "\n\n").trim()}\n`;
 }
 
 function normalizeState(state) {
@@ -614,6 +786,7 @@ function getSearchFilters(query) {
     status: query.status,
     type: query.type,
     tag: query.tag,
+    collection: query.collection,
     sort: query.sort
   };
 }
@@ -633,6 +806,8 @@ function dashboardPage(root) {
       </header>
 
       <section id="stats" class="stats" aria-label="统计概览"></section>
+
+      <section id="collections" class="collections" aria-label="项目集"></section>
 
       <section class="filters" aria-label="筛选条件">
         <label>
@@ -675,6 +850,7 @@ function dashboardPage(root) {
     <script>
       const elements = {
         stats: document.querySelector("#stats"),
+        collections: document.querySelector("#collections"),
         list: document.querySelector("#list"),
         query: document.querySelector("#query"),
         status: document.querySelector("#status"),
@@ -687,8 +863,10 @@ function dashboardPage(root) {
       };
 
       let searchResult = null;
+      let collectionResult = [];
       let debounceTimer = null;
       const authToken = new URLSearchParams(location.search).get("token") || "";
+      let activeCollection = new URLSearchParams(location.search).get("collection") || "";
 
       function escapeHtml(value) {
         return String(value ?? "")
@@ -762,6 +940,43 @@ function dashboardPage(root) {
         \`).join("");
       }
 
+      function renderCollections(collections) {
+        collectionResult = collections || [];
+        if (!collectionResult.length) {
+          elements.collections.innerHTML = "";
+          return;
+        }
+        elements.collections.innerHTML = \`
+          <div class="section-head">
+            <div>
+              <h2>项目集</h2>
+              <p>按主题汇总多个 artifact 的进度。</p>
+            </div>
+            \${activeCollection ? '<button id="clearCollection" type="button">显示全部</button>' : ""}
+          </div>
+          <div class="collection-list">
+            \${collectionResult.map(renderCollectionCard).join("")}
+          </div>
+        \`;
+      }
+
+      function renderCollectionCard(collection) {
+        const progress = collection.checkpointCount
+          ? collection.doneCheckpointCount + "/" + collection.checkpointCount + " 阶段 · " + collection.progressPercent + "%"
+          : "无阶段";
+        const href = withAuthPath("/?collection=" + encodeURIComponent(collection.id));
+        return \`
+          <article class="collection-card \${collection.id === activeCollection ? "active" : ""}">
+            <div>
+              <a href="\${href}">\${escapeHtml(collection.title)}</a>
+              <p>\${escapeHtml(collection.description || progress)}</p>
+              <small>\${collection.artifactCount} 个 artifact · \${escapeHtml(progress)} · \${collection.noteCount} 条评论</small>
+            </div>
+            <button type="button" data-collection-id="\${escapeHtml(collection.id)}">复制摘要</button>
+          </article>
+        \`;
+      }
+
       function groupByStatus(items) {
         const grouped = new Map();
         for (const item of items) {
@@ -786,6 +1001,10 @@ function dashboardPage(root) {
           if (element.value) {
             chips.push(element.selectedOptions[0].textContent);
           }
+        }
+        if (activeCollection) {
+          const collection = collectionResult.find((item) => item.id === activeCollection);
+          chips.push("项目集：" + (collection?.title || activeCollection));
         }
         elements.activeFilters.innerHTML = chips.map((chip) => '<span>' + escapeHtml(chip) + '</span>').join("");
       }
@@ -847,13 +1066,21 @@ function dashboardPage(root) {
         if (authToken) {
           params.set("token", authToken);
         }
+        if (activeCollection) {
+          params.set("collection", activeCollection);
+        }
         return params;
       }
 
       async function load({ preserveFacets = false } = {}) {
         elements.resultSummary.textContent = "加载中...";
-        const response = await fetch("/api/artifacts/search?" + currentParams().toString());
+        const [collectionsResponse, response] = await Promise.all([
+          fetch(withAuthPath("/api/collections")),
+          fetch("/api/artifacts/search?" + currentParams().toString())
+        ]);
+        collectionResult = await collectionsResponse.json();
         searchResult = await response.json();
+        renderCollections(collectionResult);
         renderStats(searchResult.stats);
         if (!preserveFacets) {
           renderFacets(searchResult.facets);
@@ -878,6 +1105,25 @@ function dashboardPage(root) {
         element.addEventListener("change", () => load({ preserveFacets: true }).catch(renderError));
       }
       elements.refresh.addEventListener("click", () => load().catch(renderError));
+      elements.collections.addEventListener("click", async (event) => {
+        const target = event.target;
+        if (target instanceof HTMLButtonElement && target.id === "clearCollection") {
+          activeCollection = "";
+          history.replaceState(null, "", withAuthPath("/"));
+          load({ preserveFacets: true }).catch(renderError);
+          return;
+        }
+        if (!(target instanceof HTMLButtonElement) || !target.dataset.collectionId) {
+          return;
+        }
+        const response = await fetch(withAuthPath("/api/collections/" + encodeURIComponent(target.dataset.collectionId) + "/markdown"));
+        const markdown = await response.text();
+        await navigator.clipboard.writeText(markdown);
+        target.textContent = "已复制";
+        setTimeout(() => {
+          target.textContent = "复制摘要";
+        }, 1200);
+      });
       load().catch(renderError);
     </script>
   `);
@@ -1533,6 +1779,57 @@ function pageShell(title, body) {
       font-size: 24px;
       line-height: 1.1;
     }
+    .collections {
+      margin-bottom: 14px;
+    }
+    .section-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 10px;
+    }
+    .section-head h2 {
+      margin-bottom: 2px;
+    }
+    .section-head p {
+      margin-bottom: 0;
+      font-size: 14px;
+    }
+    .collection-list {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .collection-card {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: start;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+      padding: 12px;
+    }
+    .collection-card.active {
+      border-color: var(--accent);
+    }
+    .collection-card a {
+      color: var(--text);
+      font-weight: 700;
+      text-decoration: none;
+    }
+    .collection-card p {
+      margin: 4px 0;
+      font-size: 14px;
+    }
+    .collection-card small {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .collection-card button {
+      white-space: nowrap;
+    }
     .filters {
       display: grid;
       grid-template-columns: minmax(240px, 1.4fr) repeat(4, minmax(130px, 0.8fr));
@@ -1863,6 +2160,9 @@ function pageShell(title, body) {
       .filters {
         grid-template-columns: repeat(2, minmax(0, 1fr));
       }
+      .collection-list {
+        grid-template-columns: 1fr;
+      }
       .artifact-view {
         grid-template-columns: 1fr;
       }
@@ -1883,7 +2183,8 @@ function pageShell(title, body) {
         display: block;
       }
       .filters,
-      .stats {
+      .stats,
+      .collection-card {
         grid-template-columns: 1fr;
       }
       .dashboard {
@@ -1992,6 +2293,20 @@ async function createApp(store, options = {}) {
 
   app.get("/api/artifacts/search", async (request) => {
     return store.searchArtifacts(getSearchFilters(request.query));
+  });
+
+  app.get("/api/collections", async () => {
+    return store.listCollections();
+  });
+
+  app.get("/api/collections/:id/markdown", async (request, reply) => {
+    const markdown = await store.getCollectionMarkdown(request.params.id);
+    if (markdown === null) {
+      return reply.code(404).send({
+        error: "Collection not found."
+      });
+    }
+    return reply.type("text/markdown; charset=utf-8").send(markdown);
   });
 
   app.get("/api/artifacts/:id", async (request, reply) => {

@@ -25,7 +25,8 @@ async function writeArtifact(id, metadata = {}, state = {}) {
     createdAt: metadata.createdAt || "2026-05-17T00:00:00.000Z",
     updatedAt: metadata.updatedAt || "2026-05-17T00:00:00.000Z",
     entry: "index.html",
-    tags: metadata.tags || []
+    tags: metadata.tags || [],
+    collection: metadata.collection || null
   });
   await writeJson(path.join(dir, "state.json"), {
     status: state.status || "in-progress",
@@ -224,6 +225,76 @@ describe("artifact server", () => {
       expectedStatus: 400
     });
     assert.equal(invalidNote.error, "Note text is required.");
+  });
+
+  it("groups artifacts into collections and exports collection markdown", async () => {
+    await writeArtifact("research-note", {
+      title: "Research Note",
+      type: "research-report",
+      collection: {
+        id: "metadata-upgrade",
+        title: "Metadata Upgrade"
+      }
+    }, {
+      checkpoints: [
+        {
+          id: "research",
+          title: "Research",
+          done: true,
+          doneAt: "2026-05-17T00:00:00.000Z",
+          note: ""
+        }
+      ],
+      notes: [
+        {
+          id: "note-1",
+          at: "2026-05-17T00:00:00.000Z",
+          text: "Looks good."
+        }
+      ]
+    });
+    await writeArtifact("plan-note", {
+      title: "Plan Note",
+      collection: "metadata-upgrade"
+    }, {
+      checkpoints: [
+        {
+          id: "plan",
+          title: "Plan",
+          done: false,
+          doneAt: null,
+          note: ""
+        }
+      ]
+    });
+
+    const collections = await injectJson({
+      method: "GET",
+      url: "/api/collections"
+    });
+    assert.equal(collections.length, 1);
+    assert.equal(collections[0].id, "metadata-upgrade");
+    assert.equal(collections[0].artifactCount, 2);
+    assert.equal(collections[0].checkpointCount, 2);
+    assert.equal(collections[0].doneCheckpointCount, 1);
+    assert.equal(collections[0].progressPercent, 50);
+    assert.equal(collections[0].noteCount, 1);
+
+    const filtered = await injectJson({
+      method: "GET",
+      url: "/api/artifacts/search?collection=metadata-upgrade"
+    });
+    assert.deepEqual(filtered.items.map((item) => item.id).sort(), ["plan-note", "research-note"]);
+
+    const markdown = await app.inject({
+      method: "GET",
+      url: "/api/collections/metadata-upgrade/markdown"
+    });
+    assert.equal(markdown.statusCode, 200);
+    assert.match(markdown.headers["content-type"], /text\/markdown/);
+    assert.match(markdown.body, /# Metadata Upgrade/);
+    assert.match(markdown.body, /Research Note/);
+    assert.match(markdown.body, /阶段进度：1\/2/);
   });
 
   it("protects pages, APIs, and artifact files when a token is configured", async () => {

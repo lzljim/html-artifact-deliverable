@@ -115,4 +115,34 @@ describe("publish-artifact", () => {
     assert.equal(state.checkpoints[1].title, "阶段 2：新增阶段");
     assert.equal(state.notes[0].text, "existing");
   });
+
+  it("writes artifact collection metadata and updates collection.json", async () => {
+    const htmlPath = path.join(tempRoot, "review.html");
+    await fs.writeFile(htmlPath, "<!doctype html><title>Review Artifact</title><h1>Review Artifact</h1>", "utf8");
+
+    const { stdout } = await runPublish([
+      "--html", htmlPath,
+      "--root", tempRoot,
+      "--id", "review-artifact",
+      "--collection", "metadata-upgrade:Metadata Upgrade",
+      "--no-auto-checkpoints"
+    ]);
+    const result = JSON.parse(stdout);
+    assert.deepEqual(result.collection, {
+      id: "metadata-upgrade",
+      title: "Metadata Upgrade"
+    });
+
+    const artifact = await readJson(path.join(tempRoot, "review-artifact", "artifact.json"));
+    assert.deepEqual(artifact.collection, {
+      id: "metadata-upgrade",
+      title: "Metadata Upgrade"
+    });
+
+    const collectionConfig = await readJson(path.join(tempRoot, "collection.json"));
+    assert.equal(collectionConfig.collections.length, 1);
+    assert.equal(collectionConfig.collections[0].id, "metadata-upgrade");
+    assert.equal(collectionConfig.collections[0].title, "Metadata Upgrade");
+    assert.deepEqual(collectionConfig.collections[0].artifactIds, ["review-artifact"]);
+  });
 });
