@@ -24,6 +24,14 @@ node scripts/publish-artifact.mjs --html <file.html> --title "<title>" --type im
 
 The publish script copies the input file to `<artifact-root>/<id>/index.html`, writes `artifact.json`, and initializes `state.json` if it does not exist.
 
+For quick publishing, these fields are inferred when omitted:
+
+- `title`: `<title>`, then `<h1>`, then file name.
+- `type`: title/path/content keywords such as `implementation-plan`, `architecture-explainer`, `code-review`, `research-report`, or `custom-editor`.
+- `checkpoints`: phase-style HTML headings, including paired `.phase-id` blocks followed by `<h3>` and standalone headings like `阶段 1：旧/新 Schema 生成`.
+
+Pass `--checkpoint` to use explicit checkpoints instead of inferred ones, or `--no-auto-checkpoints` to publish without generated checkpoints.
+
 Defaults:
 
 - Artifact root: `~/.codex/html-artifacts`

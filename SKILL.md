@@ -73,6 +73,12 @@ Publish an existing HTML file into the artifact root:
 node scripts/publish-artifact.mjs --html <file.html> --title "<title>" --type implementation-plan --checkpoint research:调研完成
 ```
 
+When `--title`, `--type`, or `--checkpoint` are omitted, the publish script infers them from the HTML:
+
+- Title: `<title>` first, then `<h1>`, then the file name.
+- Type: inferred from title, path, and document text.
+- Checkpoints: inferred from phase headings such as `阶段 0` / `阶段 1A`.
+
 Only use `--host 0.0.0.0` after the user explicitly wants LAN sharing and has accepted the privacy risk.
 
 ## Layout Defaults

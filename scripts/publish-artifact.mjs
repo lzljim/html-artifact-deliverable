@@ -10,9 +10,9 @@ const DEFAULT_ROOT = path.join(os.homedir(), ".codex", "html-artifacts");
 function parseArgs(argv) {
   const args = {
     root: process.env.ARTIFACT_ROOT || DEFAULT_ROOT,
-    type: "html-artifact",
     tags: [],
-    checkpoints: []
+    checkpoints: [],
+    autoCheckpoints: true
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -33,6 +33,8 @@ function parseArgs(argv) {
       args.tags.push(argv[++index]);
     } else if (arg === "--checkpoint") {
       args.checkpoints.push(argv[++index]);
+    } else if (arg === "--no-auto-checkpoints") {
+      args.autoCheckpoints = false;
     } else if (arg === "--workspace") {
       args.workspace = argv[++index];
     }
@@ -46,11 +48,17 @@ function printHelp() {
   console.log(`Usage: node ${script} --html <file> [--title <title>] [--id <id>] [--type <type>] [--root <dir>]
 
 Examples:
-  node ${script} --html docs/ai/plan.html --title "执行计划" --type implementation-plan
+  node ${script} --html docs/ai/plan.html
   node ${script} --html report.html --checkpoint research:调研完成 --checkpoint verification:验证完成
+  node ${script} --html notes.html --no-auto-checkpoints
 
 Checkpoint format:
-  --checkpoint <id>:<title>`);
+  --checkpoint <id>:<title>
+
+Automatic behavior:
+  title:       <title>, then <h1>, then file name
+  type:        inferred from title/path/content unless --type is set
+  checkpoints: inferred from phase-style headings unless --checkpoint is set`);
 }
 
 function slugify(value) {
@@ -97,6 +105,134 @@ async function readJson(filePath, fallback) {
   }
 }
 
+function decodeHtmlEntities(value) {
+  const named = new Map([
+    ["amp", "&"],
+    ["lt", "<"],
+    ["gt", ">"],
+    ["quot", "\""],
+    ["apos", "'"],
+    ["nbsp", " "]
+  ]);
+  return String(value || "").replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (match, entity) => {
+    const lower = entity.toLowerCase();
+    if (lower.startsWith("#x")) {
+      return String.fromCodePoint(Number.parseInt(lower.slice(2), 16));
+    }
+    if (lower.startsWith("#")) {
+      return String.fromCodePoint(Number.parseInt(lower.slice(1), 10));
+    }
+    return named.get(lower) || match;
+  });
+}
+
+function cleanHtmlText(value) {
+  return decodeHtmlEntities(String(value || "")
+    .replace(/<script\b[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style\b[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim());
+}
+
+function matchFirst(html, pattern) {
+  const match = pattern.exec(html);
+  return match ? cleanHtmlText(match[1]) : "";
+}
+
+function extractTitle(html, htmlPath) {
+  return matchFirst(html, /<title[^>]*>([\s\S]*?)<\/title>/i)
+    || matchFirst(html, /<h1[^>]*>([\s\S]*?)<\/h1>/i)
+    || path.basename(htmlPath, path.extname(htmlPath));
+}
+
+function inferType(title, htmlPath, html) {
+  const titleAndPath = `${title}\n${htmlPath}`.toLowerCase();
+  const sample = `${titleAndPath}\n${cleanHtmlText(html).slice(0, 4000)}`.toLowerCase();
+  if (/code review|pr writeup|pull request|代码评审|pr\s*说明/.test(titleAndPath)) {
+    return "code-review";
+  }
+  if (/implementation plan|计划|实施|阶段|milestone|checkpoint/.test(sample)) {
+    return "implementation-plan";
+  }
+  if (/code review|pr writeup|pull request|代码评审|审查|评审|pr\s*说明/.test(sample)) {
+    return "code-review";
+  }
+  if (/architecture|架构|流程|链路|render path|module map/.test(sample)) {
+    return "architecture-explainer";
+  }
+  if (/report|research|brief|调查|调研|报告|复盘/.test(sample)) {
+    return "research-report";
+  }
+  if (/editor|tool|tuner|triage|编辑器|工作台|调参|分拣/.test(sample)) {
+    return "custom-editor";
+  }
+  return "html-artifact";
+}
+
+function phaseIdFromText(value, fallbackIndex) {
+  const normalized = String(value || "").toLowerCase().replace(/\s+/g, "");
+  const phaseMatch = /阶段([0-9]+[a-z]?|[0-9]+-[0-9]+)/i.exec(normalized);
+  if (phaseMatch) {
+    return `phase-${phaseMatch[1]}`;
+  }
+  return `phase-${fallbackIndex + 1}`;
+}
+
+function dedupeCheckpoints(checkpoints) {
+  const seen = new Set();
+  return checkpoints.filter((checkpoint) => {
+    if (!checkpoint.id || seen.has(checkpoint.id)) {
+      return false;
+    }
+    seen.add(checkpoint.id);
+    return true;
+  });
+}
+
+function checkpointFromTexts(phaseText, titleText, fallbackIndex) {
+  const phase = cleanHtmlText(phaseText);
+  const title = cleanHtmlText(titleText);
+  const combinedTitle = title && !title.startsWith(phase) ? `${phase}：${title}` : title || phase;
+  return {
+    id: phaseIdFromText(phase || title, fallbackIndex),
+    title: combinedTitle,
+    done: false,
+    doneAt: null,
+    note: ""
+  };
+}
+
+function extractCheckpoints(html) {
+  const checkpoints = [];
+  const pairedPhasePattern = /<div[^>]*class=["'][^"']*\bphase-id\b[^"']*["'][^>]*>([\s\S]*?)<\/div>\s*<div[^>]*>\s*<h3[^>]*>([\s\S]*?)<\/h3>/gi;
+  let pairedMatch;
+  while ((pairedMatch = pairedPhasePattern.exec(html))) {
+    checkpoints.push(checkpointFromTexts(pairedMatch[1], pairedMatch[2], checkpoints.length));
+  }
+
+  if (checkpoints.length) {
+    return dedupeCheckpoints(checkpoints);
+  }
+
+  const headingPattern = /<h[23][^>]*>([\s\S]*?)<\/h[23]>/gi;
+  let headingMatch;
+  while ((headingMatch = headingPattern.exec(html))) {
+    const text = cleanHtmlText(headingMatch[1]);
+    if (/^阶段\s*[0-9]+[A-Za-z]?\s*[:：]/.test(text) || /^阶段\s*[0-9]+-[0-9]+\s*[:：]/.test(text)) {
+      checkpoints.push({
+        id: phaseIdFromText(text, checkpoints.length),
+        title: text,
+        done: false,
+        doneAt: null,
+        note: ""
+      });
+    }
+  }
+
+  return dedupeCheckpoints(checkpoints);
+}
+
 async function writeJson(filePath, value) {
   await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
@@ -140,8 +276,13 @@ async function main() {
     throw new Error(`HTML file not found: ${htmlPath}`);
   }
 
-  const title = args.title || path.basename(htmlPath, path.extname(htmlPath));
+  const html = await fs.readFile(htmlPath, "utf8");
+  const title = args.title || extractTitle(html, htmlPath);
   const id = args.id ? slugify(args.id) : defaultId(title, htmlPath);
+  const type = args.type || inferType(title, htmlPath, html);
+  const checkpoints = args.checkpoints.length
+    ? args.checkpoints.map(parseCheckpoint)
+    : args.autoCheckpoints ? extractCheckpoints(html) : [];
   const root = path.resolve(args.root);
   const artifactDir = path.join(root, id);
   const now = new Date().toISOString();
@@ -154,7 +295,7 @@ async function main() {
   const artifact = {
     id,
     title,
-    type: args.type,
+    type,
     createdAt: now,
     updatedAt: now,
     source: {
@@ -171,11 +312,11 @@ async function main() {
   if (!(await pathExists(statePath))) {
     await writeJson(statePath, {
       status: "in-progress",
-      checkpoints: args.checkpoints.map(parseCheckpoint),
+      checkpoints,
       notes: [],
       history: []
     });
-  } else if (args.checkpoints.length) {
+  } else if (checkpoints.length) {
     const state = await readJson(statePath, {
       status: "in-progress",
       checkpoints: [],
@@ -183,7 +324,7 @@ async function main() {
       history: []
     });
     const existingIds = new Set((state.checkpoints || []).map((item) => item.id));
-    for (const checkpoint of args.checkpoints.map(parseCheckpoint)) {
+    for (const checkpoint of checkpoints) {
       if (!existingIds.has(checkpoint.id)) {
         state.checkpoints.push(checkpoint);
       }
@@ -193,6 +334,9 @@ async function main() {
 
   console.log(JSON.stringify({
     id,
+    title,
+    type,
+    checkpointCount: checkpoints.length,
     artifactDir,
     url: `/artifacts/${encodeURIComponent(id)}`
   }, null, 2));
