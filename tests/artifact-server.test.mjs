@@ -132,6 +132,8 @@ describe("artifact server", () => {
     assert.equal(search.items[0].openNoteCount, 2);
     assert.equal(search.items[0].riskNoteCount, 1);
     assert.equal(search.items[0].actionNoteCount, 1);
+    assert.equal(search.items[0].latestOpenNote.category, "risk");
+    assert.equal(search.items[0].reviewPriority, 4);
     assert.equal(search.stats.openNotes, 2);
     assert.equal(search.stats.riskNotes, 1);
     assert.equal(search.stats.actionNotes, 1);
@@ -150,6 +152,7 @@ describe("artifact server", () => {
     assert.equal(dashboard.statusCode, 200);
     assert.match(dashboard.body, /Review Dashboard/);
     assert.match(dashboard.body, /data-review-filter=/);
+    assert.match(dashboard.body, /待处理队列/);
     assert.match(dashboard.body, /导出全部/);
     assert.match(dashboard.body, /导入全部/);
 
@@ -305,7 +308,9 @@ describe("artifact server", () => {
         {
           id: "note-1",
           at: "2026-05-17T00:00:00.000Z",
-          text: "Looks good."
+          text: "Needs owner.",
+          category: "action",
+          resolved: false
         }
       ]
     });
@@ -335,6 +340,8 @@ describe("artifact server", () => {
     assert.equal(collections[0].doneCheckpointCount, 1);
     assert.equal(collections[0].progressPercent, 50);
     assert.equal(collections[0].noteCount, 1);
+    assert.equal(collections[0].openNoteCount, 1);
+    assert.equal(collections[0].actionNoteCount, 1);
 
     const filtered = await injectJson({
       method: "GET",
@@ -351,6 +358,15 @@ describe("artifact server", () => {
     assert.match(markdown.body, /# Metadata Upgrade/);
     assert.match(markdown.body, /Research Note/);
     assert.match(markdown.body, /阶段进度：1\/2/);
+
+    const reviewMarkdown = await app.inject({
+      method: "GET",
+      url: "/api/collections/metadata-upgrade/review-markdown"
+    });
+    assert.equal(reviewMarkdown.statusCode, 200);
+    assert.match(reviewMarkdown.headers["content-type"], /text\/markdown/);
+    assert.match(reviewMarkdown.body, /# Metadata Upgrade Review 摘要/);
+    assert.match(reviewMarkdown.body, /待办：Needs owner\./);
   });
 
   it("hides archived artifacts by default but keeps them searchable", async () => {

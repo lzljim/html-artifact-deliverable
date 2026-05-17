@@ -109,7 +109,9 @@ npm run check
 
 - `archived` 状态表示已归档。归档 artifact 默认不出现在工作台搜索结果里，但直接 URL、项目集和显式“包含归档 / 只看归档”筛选仍可访问。
 - Review Dashboard 汇总未解决评论、风险、待办、阻塞/风险项、最近 7 天更新，并支持点击这些指标快速筛选列表。
-- Artifact 卡片和项目集卡片会显示未解决评论、风险、待办等 review 计数，减少逐个打开页面查看的成本。
+- Review Dashboard 会展示待处理队列，按风险、待办、问题和最近评论排序。
+- Artifact 卡片和项目集卡片会显示未解决评论、风险、待办、最近未解决评论等 review 信息，减少逐个打开页面查看的成本。
+- 项目集卡片的“复制 Review”会导出只包含未解决项、风险和待办的 Markdown 摘要。
 - `GET /api/artifacts/<id>/markdown` 会从 `state.json` 生成可贴到 PR / 周报的 Markdown 状态报告。
 - `GET /api/artifacts/<id>/export` 会导出包含 `artifact.json` 视图、`state.json` 和 `index.html` 内容的 JSON 迁移包。
 - 首页右上角“导出全部”会请求 `GET /api/export`，一次性导出 `collection.json` 和所有 artifact 的 HTML、元数据、状态。

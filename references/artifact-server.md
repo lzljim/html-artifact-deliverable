@@ -283,6 +283,7 @@ GET  /api/export
 POST /api/import
 GET  /api/collections
 GET  /api/collections/:id/markdown
+GET  /api/collections/:id/review-markdown
 GET  /api/artifacts/:id
 GET  /api/artifacts/:id/markdown
 GET  /api/artifacts/:id/export
@@ -294,7 +295,9 @@ POST /api/artifacts/:id/notes/:noteId/resolve
 POST /api/artifacts/:id/notes/:noteId/reopen
 ```
 
-The dashboard groups collection artifacts and shows aggregate progress. It also includes a Review Dashboard that summarizes unresolved comments, risks, actions, blocked/risk items, and recently updated artifacts. Review cards act as quick filters through `review=open`, `review=risk`, `review=action`, `review=blocked`, and `review=recent`.
+The dashboard groups collection artifacts and shows aggregate progress. It also includes a Review Dashboard that summarizes unresolved comments, risks, actions, blocked/risk items, and recently updated artifacts. Review cards act as quick filters through `review=open`, `review=risk`, `review=action`, `review=blocked`, and `review=recent`. The prioritized review queue sorts unresolved work by risk, action, question, and latest comment time.
+
+Collection-level review summaries are available through `GET /api/collections/:id/review-markdown`. This endpoint emits only unresolved review work, making it suitable for PR comments or chat follow-ups.
 
 The artifact detail page lets reviewers edit status, toggle checkpoints, maintain checkpoint notes, add artifact comments, filter comments by phase, resolve or reopen comments, and copy or download the current state or comment summary as JSON/Markdown.
 

@@ -83,6 +83,7 @@ Routes:
   POST /api/import
   GET  /api/collections
   GET  /api/collections/:id/markdown
+  GET  /api/collections/:id/review-markdown
   GET  /api/artifacts/:id
   GET  /api/artifacts/:id/markdown
   GET  /api/artifacts/:id/export
@@ -411,6 +412,14 @@ function createStore(root) {
     return collectionMarkdown(collection);
   }
 
+  async function getCollectionReviewMarkdown(id) {
+    const collection = (await listCollections()).find((item) => item.id === id);
+    if (!collection) {
+      return null;
+    }
+    return collectionReviewMarkdown(collection);
+  }
+
   async function searchArtifacts(filters) {
     const allArtifacts = await listArtifacts();
     let items = allArtifacts;
@@ -656,6 +665,7 @@ function createStore(root) {
     searchArtifacts,
     listCollections,
     getCollectionMarkdown,
+    getCollectionReviewMarkdown,
     getArtifact,
     getArtifactMarkdown,
     getArtifactBundle,
@@ -705,6 +715,8 @@ function normalizeArtifact(metadata, state, fallbackId) {
     actionNoteCount: review.actionNoteCount,
     questionNoteCount: review.questionNoteCount,
     lastNoteAt: review.lastNoteAt,
+    latestOpenNote: review.latestOpenNote,
+    reviewPriority: review.reviewPriority,
     needsReview: review.openNoteCount > 0 || review.riskNoteCount > 0 || review.actionNoteCount > 0,
     blockedOrRisk: (state.status || "in-progress") === "blocked" || review.riskNoteCount > 0
   };
@@ -712,6 +724,10 @@ function normalizeArtifact(metadata, state, fallbackId) {
 
 function reviewMetrics(state) {
   const openNotes = state.notes.filter((item) => !item.resolved);
+  const latestOpenNote = openNotes
+    .slice()
+    .sort(compareNotesForReview)
+    .at(0) || null;
   const lastNoteAt = state.notes
     .map((item) => item.at)
     .filter(Boolean)
@@ -722,7 +738,43 @@ function reviewMetrics(state) {
     riskNoteCount: openNotes.filter((item) => item.category === "risk").length,
     actionNoteCount: openNotes.filter((item) => item.category === "action").length,
     questionNoteCount: openNotes.filter((item) => item.category === "question").length,
-    lastNoteAt
+    lastNoteAt,
+    latestOpenNote: latestOpenNote ? summarizeNote(latestOpenNote) : null,
+    reviewPriority: reviewPriority(openNotes, state.status)
+  };
+}
+
+function compareNotesForReview(left, right) {
+  return noteCategoryPriority(right.category) - noteCategoryPriority(left.category)
+    || String(right.at || "").localeCompare(String(left.at || ""));
+}
+
+function noteCategoryPriority(category) {
+  if (category === "risk") {
+    return 4;
+  }
+  if (category === "action") {
+    return 3;
+  }
+  if (category === "question") {
+    return 2;
+  }
+  return 1;
+}
+
+function reviewPriority(openNotes, status) {
+  const categoryPriority = openNotes.reduce((max, item) => Math.max(max, noteCategoryPriority(item.category)), 0);
+  return Math.max(categoryPriority, status === "blocked" ? 3 : 0);
+}
+
+function summarizeNote(note) {
+  return {
+    id: note.id,
+    at: note.at,
+    text: note.text,
+    author: note.author,
+    category: note.category,
+    checkpointId: note.checkpointId
   };
 }
 
@@ -864,6 +916,56 @@ function collectionMarkdown(collection) {
   return `${lines.join("\n").replace(/\n{3,}/g, "\n\n").trim()}\n`;
 }
 
+function collectionReviewMarkdown(collection) {
+  const reviewArtifacts = collection.artifacts
+    .filter((artifact) => artifact.needsReview || artifact.blockedOrRisk)
+    .sort(compareArtifactsForReview);
+  const lines = [
+    `# ${collection.title} Review 摘要`,
+    "",
+    `- 待 Review Artifact：${collection.reviewArtifactCount}`,
+    `- 未解决评论：${collection.openNoteCount}`,
+    `- 风险：${collection.riskNoteCount}`,
+    `- 待办：${collection.actionNoteCount}`,
+    ""
+  ];
+
+  if (!reviewArtifacts.length) {
+    lines.push("暂无未解决 review 项。", "");
+    return `${lines.join("\n").replace(/\n{3,}/g, "\n\n").trim()}\n`;
+  }
+
+  for (const artifact of reviewArtifacts) {
+    lines.push(`## ${artifact.title}`, "");
+    lines.push(`- ID：${artifact.id}`);
+    lines.push(`- 状态：${artifact.statusLabel}`);
+    lines.push(`- 未解决：${artifact.openNoteCount}，风险：${artifact.riskNoteCount}，待办：${artifact.actionNoteCount}`);
+    if (artifact.latestOpenNote) {
+      lines.push(`- 最近待处理：${noteCategoryLabel(artifact.latestOpenNote.category)}：${artifact.latestOpenNote.text}`);
+    }
+    lines.push("");
+  }
+
+  return `${lines.join("\n").replace(/\n{3,}/g, "\n\n").trim()}\n`;
+}
+
+function compareArtifactsForReview(left, right) {
+  return (right.reviewPriority || 0) - (left.reviewPriority || 0)
+    || String(right.latestOpenNote?.at || right.lastNoteAt || right.updatedAt || "").localeCompare(String(left.latestOpenNote?.at || left.lastNoteAt || left.updatedAt || ""))
+    || left.title.localeCompare(right.title, "zh-CN");
+}
+
+function noteCategoryLabel(category) {
+  const labels = {
+    general: "一般",
+    question: "问题",
+    risk: "风险",
+    action: "待办",
+    approval: "认可"
+  };
+  return labels[category] || category || "一般";
+}
+
 function artifactStateMarkdown(artifact, state) {
   const lines = [
     `# ${artifact.title}`,
@@ -967,6 +1069,9 @@ function normalizeState(state) {
 
 function compareArtifacts(sort) {
   return (left, right) => {
+    if (sort === "review") {
+      return compareArtifactsForReview(left, right);
+    }
     if (sort === "title") {
       return left.title.localeCompare(right.title, "zh-CN");
     }
@@ -1253,7 +1358,54 @@ function dashboardPage(root) {
               </button>
             \`).join("")}
           </div>
+          \${renderReviewQueue()}
         \`;
+      }
+
+      function renderReviewQueue() {
+        const queue = (searchResult?.items || [])
+          .filter((artifact) => artifact.needsReview || artifact.blockedOrRisk)
+          .slice()
+          .sort((left, right) => (right.reviewPriority || 0) - (left.reviewPriority || 0)
+            || String(right.latestOpenNote?.at || right.lastNoteAt || right.updatedAt || "").localeCompare(String(left.latestOpenNote?.at || left.lastNoteAt || left.updatedAt || "")))
+          .slice(0, 6);
+        if (!queue.length) {
+          return '<div class="review-queue empty compact">当前筛选下没有待处理 review 项。</div>';
+        }
+        return \`
+          <div class="review-queue">
+            <div class="review-queue-head">
+              <h3>待处理队列</h3>
+              <span>按风险、待办、问题和最近评论排序</span>
+            </div>
+            <div class="queue-list">
+              \${queue.map(renderQueueItem).join("")}
+            </div>
+          </div>
+        \`;
+      }
+
+      function renderQueueItem(artifact) {
+        const note = artifact.latestOpenNote;
+        const noteText = note ? noteCategoryLabel(note.category) + "：" + note.text : (artifact.status === "blocked" ? "当前处于阻塞状态" : "需要 review");
+        return \`
+          <a class="queue-item" href="\${withAuthPath("/artifacts/" + encodeURIComponent(artifact.id))}">
+            <strong>\${escapeHtml(artifact.title)}</strong>
+            <span>\${escapeHtml(noteText)}</span>
+            <small>未解决 \${escapeHtml(artifact.openNoteCount || 0)} · 风险 \${escapeHtml(artifact.riskNoteCount || 0)} · 待办 \${escapeHtml(artifact.actionNoteCount || 0)}</small>
+          </a>
+        \`;
+      }
+
+      function noteCategoryLabel(category) {
+        const labels = {
+          general: "一般",
+          question: "问题",
+          risk: "风险",
+          action: "待办",
+          approval: "认可"
+        };
+        return labels[category] || category || "一般";
       }
 
       function renderCollections(collections) {
@@ -1293,7 +1445,10 @@ function dashboardPage(root) {
                 <span>待办 \${escapeHtml(collection.actionNoteCount || 0)}</span>
               </div>
             </div>
-            <button type="button" data-collection-id="\${escapeHtml(collection.id)}">复制摘要</button>
+            <div class="collection-actions">
+              <button type="button" data-collection-id="\${escapeHtml(collection.id)}">复制摘要</button>
+              <button type="button" data-collection-review-id="\${escapeHtml(collection.id)}">复制 Review</button>
+            </div>
           </article>
         \`;
       }
@@ -1373,6 +1528,7 @@ function dashboardPage(root) {
           artifact.openNoteCount ? "未解决 " + artifact.openNoteCount : "",
           artifact.riskNoteCount ? "风险 " + artifact.riskNoteCount : "",
           artifact.actionNoteCount ? "待办 " + artifact.actionNoteCount : "",
+          artifact.latestOpenNote ? noteCategoryLabel(artifact.latestOpenNote.category) + "：" + artifact.latestOpenNote.text : "",
           artifact.lastNoteAt ? "最后评论 " + formatDate(artifact.lastNoteAt) : ""
         ].filter(Boolean);
         return \`
@@ -1514,6 +1670,16 @@ function dashboardPage(root) {
           return;
         }
         if (!(target instanceof HTMLButtonElement) || !target.dataset.collectionId) {
+          if (!(target instanceof HTMLButtonElement) || !target.dataset.collectionReviewId) {
+            return;
+          }
+          const response = await fetch(withAuthPath("/api/collections/" + encodeURIComponent(target.dataset.collectionReviewId) + "/review-markdown"));
+          const markdown = await response.text();
+          await navigator.clipboard.writeText(markdown);
+          target.textContent = "已复制";
+          setTimeout(() => {
+            target.textContent = "复制 Review";
+          }, 1200);
           return;
         }
         const response = await fetch(withAuthPath("/api/collections/" + encodeURIComponent(target.dataset.collectionId) + "/markdown"));
@@ -2274,6 +2440,49 @@ function pageShell(title, body) {
       color: var(--muted);
       font-size: 12px;
     }
+    .review-queue {
+      margin-top: 12px;
+      border-top: 1px solid var(--border);
+      padding-top: 12px;
+    }
+    .review-queue-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 8px;
+    }
+    .review-queue-head h3 {
+      margin: 0;
+      font-size: 15px;
+    }
+    .review-queue-head span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .queue-list {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .queue-item {
+      display: grid;
+      gap: 4px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      padding: 10px;
+      text-decoration: none;
+    }
+    .queue-item:hover {
+      border-color: var(--accent);
+    }
+    .queue-item span,
+    .queue-item small {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
     .section-head {
       display: flex;
       align-items: flex-start;
@@ -2321,6 +2530,10 @@ function pageShell(title, body) {
     }
     .collection-card button {
       white-space: nowrap;
+    }
+    .collection-actions {
+      display: grid;
+      gap: 8px;
     }
     .filters {
       display: grid;
@@ -2679,6 +2892,9 @@ function pageShell(title, body) {
       .collection-list {
         grid-template-columns: 1fr;
       }
+      .queue-list {
+        grid-template-columns: 1fr;
+      }
       .artifact-view {
         grid-template-columns: 1fr;
       }
@@ -2855,6 +3071,16 @@ async function createApp(store, options = {}) {
 
   app.get("/api/collections/:id/markdown", async (request, reply) => {
     const markdown = await store.getCollectionMarkdown(request.params.id);
+    if (markdown === null) {
+      return reply.code(404).send({
+        error: "Collection not found."
+      });
+    }
+    return reply.type("text/markdown; charset=utf-8").send(markdown);
+  });
+
+  app.get("/api/collections/:id/review-markdown", async (request, reply) => {
+    const markdown = await store.getCollectionReviewMarkdown(request.params.id);
     if (markdown === null) {
       return reply.code(404).send({
         error: "Collection not found."
