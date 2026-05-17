@@ -11,6 +11,12 @@ npm install
 npm start
 ```
 
+Before committing changes to the server or publish script, run:
+
+```bash
+npm run check
+```
+
 With explicit settings:
 
 ```bash

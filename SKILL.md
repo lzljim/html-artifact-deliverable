@@ -61,6 +61,12 @@ Start the server:
 npm start
 ```
 
+Run regression checks before committing server or publish-script changes:
+
+```bash
+npm run check
+```
+
 Default behavior:
 
 - Artifact root: `~/.codex/html-artifacts`
