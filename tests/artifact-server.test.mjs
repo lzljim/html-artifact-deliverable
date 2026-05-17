@@ -108,6 +108,14 @@ describe("artifact server", () => {
     assert.equal(search.filteredCount, 1);
     assert.equal(search.items[0].id, "plan-alpha");
 
+    const dashboard = await app.inject({
+      method: "GET",
+      url: "/"
+    });
+    assert.equal(dashboard.statusCode, 200);
+    assert.match(dashboard.body, /导出全部/);
+    assert.match(dashboard.body, /导入全部/);
+
     const page = await app.inject({
       method: "GET",
       url: "/artifacts/plan-alpha"
@@ -468,6 +476,70 @@ describe("artifact server", () => {
     }
   });
 
+  it("imports a full artifact bundle through the server API", async () => {
+    const sourceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "artifact-source-test-"));
+    try {
+      const sourceDir = path.join(sourceRoot, "imported-plan");
+      await fs.mkdir(sourceDir, {
+        recursive: true
+      });
+      await fs.writeFile(path.join(sourceDir, "index.html"), "<!doctype html><title>Imported Plan</title>", "utf8");
+      await writeJson(path.join(sourceDir, "artifact.json"), {
+        id: "imported-plan",
+        title: "Imported Plan",
+        type: "implementation-plan",
+        createdAt: "2026-05-17T00:00:00.000Z",
+        updatedAt: "2026-05-17T00:00:00.000Z",
+        entry: "index.html",
+        tags: ["import"]
+      });
+      await writeJson(path.join(sourceDir, "state.json"), {
+        status: "done",
+        checkpoints: [],
+        notes: [],
+        history: []
+      });
+
+      const bundle = await createStore(sourceRoot).getAllArtifactsBundle();
+      const imported = await injectJson({
+        method: "POST",
+        url: "/api/import",
+        headers: {
+          "content-type": "application/json"
+        },
+        payload: {
+          bundle
+        }
+      });
+      assert.equal(imported.artifactCount, 1);
+
+      const artifact = await injectJson({
+        method: "GET",
+        url: "/api/artifacts/imported-plan"
+      });
+      assert.equal(artifact.title, "Imported Plan");
+      assert.equal(artifact.status, "done");
+
+      const duplicate = await injectJson({
+        method: "POST",
+        url: "/api/import",
+        headers: {
+          "content-type": "application/json"
+        },
+        payload: {
+          bundle
+        },
+        expectedStatus: 409
+      });
+      assert.match(duplicate.error, /already exists/);
+    } finally {
+      await fs.rm(sourceRoot, {
+        recursive: true,
+        force: true
+      });
+    }
+  });
+
   it("protects pages, APIs, and artifact files when a token is configured", async () => {
     await writeArtifact("secure-plan", {
       title: "Secure Plan"
@@ -589,6 +661,19 @@ describe("artifact server", () => {
     });
     assert.equal(allExportWithReadToken.statusCode, 200);
     assert.equal(allExportWithReadToken.json().artifactCount, 1);
+
+    const blockedImport = await app.inject({
+      method: "POST",
+      url: "/api/import?token=read-token",
+      headers: {
+        "content-type": "application/json"
+      },
+      payload: {
+        bundle: allExportWithReadToken.json()
+      }
+    });
+    assert.equal(blockedImport.statusCode, 403);
+    assert.equal(blockedImport.json().error, "Read-only artifact token cannot modify state.");
 
     const blockedToggle = await app.inject({
       method: "POST",

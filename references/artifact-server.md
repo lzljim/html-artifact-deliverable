@@ -280,6 +280,7 @@ GET  /api/health
 GET  /api/artifacts
 GET  /api/artifacts/search
 GET  /api/export
+POST /api/import
 GET  /api/collections
 GET  /api/collections/:id/markdown
 GET  /api/artifacts/:id
@@ -300,6 +301,7 @@ Artifact-level export endpoints:
 - `GET /api/artifacts/:id/markdown`: returns a Markdown status report generated from `artifact.json` plus `state.json`, suitable for PRs and weekly reports.
 - `GET /api/artifacts/:id/export`: returns a JSON migration bundle with artifact metadata, normalized state, `index.html` content, and `exportedAt`.
 - `GET /api/export`: returns a full-root migration bundle with `collection.json` plus every artifact's `index.html`, `artifact.json`, and normalized `state.json`.
+- `POST /api/import`: imports a full-root migration bundle into the current artifact root. It is a write operation, so read-only tokens receive `403`.
 
 MVP storage should be JSON files, not a database. Use atomic writes for `state.json` when possible.
 

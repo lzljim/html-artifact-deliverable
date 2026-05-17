@@ -66,7 +66,9 @@ async function pathExists(filePath) {
 
 function normalizeBundle(raw) {
   if (raw?.format !== BUNDLE_FORMAT || !Array.isArray(raw.artifacts)) {
-    throw new Error(`Unsupported bundle format. Expected ${BUNDLE_FORMAT}.`);
+    const error = new Error(`Unsupported bundle format. Expected ${BUNDLE_FORMAT}.`);
+    error.statusCode = 400;
+    throw error;
   }
   return raw;
 }
@@ -121,20 +123,31 @@ async function importBundle({ bundlePath, root, overwrite = false }) {
   }
 
   const bundle = normalizeBundle(await readJson(bundlePath));
+  return importBundleData({
+    bundle,
+    root,
+    overwrite
+  });
+}
+
+async function importBundleData({ bundle, root, overwrite = false }) {
+  const normalizedBundle = normalizeBundle(bundle);
   const absoluteRoot = path.resolve(root || DEFAULT_ROOT);
   await fs.mkdir(absoluteRoot, {
     recursive: true
   });
 
   const writtenArtifacts = [];
-  for (const item of bundle.artifacts) {
+  for (const item of normalizedBundle.artifacts) {
     const id = String(item?.id || item?.artifact?.id || "");
     if (!isArtifactId(id)) {
       throw new Error(`Invalid artifact id in bundle: ${id}`);
     }
     const dir = path.join(absoluteRoot, id);
     if ((await pathExists(dir)) && !overwrite) {
-      throw new Error(`Artifact already exists: ${id}. Re-run with --overwrite to replace it.`);
+      const error = new Error(`Artifact already exists: ${id}. Re-run with --overwrite to replace it.`);
+      error.statusCode = 409;
+      throw error;
     }
     await fs.mkdir(dir, {
       recursive: true
@@ -161,8 +174,8 @@ async function importBundle({ bundlePath, root, overwrite = false }) {
         collections: []
       };
   const nextCollectionConfig = overwrite
-    ? normalizeCollectionConfig(bundle.collectionConfig)
-    : mergeCollectionConfig(existingCollectionConfig, bundle.collectionConfig);
+    ? normalizeCollectionConfig(normalizedBundle.collectionConfig)
+    : mergeCollectionConfig(existingCollectionConfig, normalizedBundle.collectionConfig);
   await writeJson(collectionPath, nextCollectionConfig);
 
   return {
@@ -188,6 +201,7 @@ async function main() {
 
 export {
   importBundle,
+  importBundleData,
   parseArgs
 };
 

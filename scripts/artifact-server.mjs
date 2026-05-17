@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import Fastify from "fastify";
 import fastifyStatic from "@fastify/static";
 import MiniSearch from "minisearch";
+import { importBundleData } from "./import-artifact-bundle.mjs";
 
 const DEFAULT_PORT = 8787;
 const DEFAULT_HOST = "127.0.0.1";
@@ -79,6 +80,7 @@ Routes:
   GET  /api/artifacts
   GET  /api/artifacts/search
   GET  /api/export
+  POST /api/import
   GET  /api/collections
   GET  /api/collections/:id/markdown
   GET  /api/artifacts/:id
@@ -542,6 +544,16 @@ function createStore(root) {
     };
   }
 
+  async function importAllArtifactsBundle(payload) {
+    const bundle = payload?.bundle || payload;
+    const overwrite = Boolean(payload?.overwrite);
+    return importBundleData({
+      bundle,
+      root: absoluteRoot,
+      overwrite
+    });
+  }
+
   async function putState(id, state) {
     const normalized = normalizeState(state);
     await writeJsonAtomic(path.join(artifactDir(id), "state.json"), normalized);
@@ -635,6 +647,7 @@ function createStore(root) {
     getArtifactMarkdown,
     getArtifactBundle,
     getAllArtifactsBundle,
+    importAllArtifactsBundle,
     getState,
     putState,
     toggleCheckpoint,
@@ -995,6 +1008,8 @@ function dashboardPage(root) {
         </div>
         <div class="toolbar">
           <a class="button-link" id="exportAll" href="${escapeHtml(appendToken("/api/export", ""))}" download="html-artifacts-bundle.json">导出全部</a>
+          <button id="importAll" type="button">导入全部</button>
+          <input id="importFile" type="file" accept="application/json,.json" hidden>
           <button id="refresh" type="button">刷新</button>
         </div>
       </header>
@@ -1061,6 +1076,8 @@ function dashboardPage(root) {
         archived: document.querySelector("#archived"),
         sort: document.querySelector("#sort"),
         refresh: document.querySelector("#refresh"),
+        importAll: document.querySelector("#importAll"),
+        importFile: document.querySelector("#importFile"),
         resultSummary: document.querySelector("#resultSummary"),
         activeFilters: document.querySelector("#activeFilters")
       };
@@ -1292,6 +1309,42 @@ function dashboardPage(root) {
         renderList(searchResult.items);
       }
 
+      async function importBundleFile(file) {
+        if (!file) {
+          return;
+        }
+        elements.importAll.disabled = true;
+        elements.importAll.textContent = "导入中...";
+        try {
+          const bundle = JSON.parse(await file.text());
+          const response = await fetch(withAuthPath("/api/import"), {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              bundle,
+              overwrite: false
+            })
+          });
+          const result = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            throw new Error(result.error || "导入失败。");
+          }
+          elements.importAll.textContent = "已导入 " + result.artifactCount + " 个";
+          await load();
+          setTimeout(() => {
+            elements.importAll.textContent = "导入全部";
+          }, 1800);
+        } catch (error) {
+          elements.resultSummary.textContent = "导入失败：" + error.message;
+          elements.importAll.textContent = "导入全部";
+        } finally {
+          elements.importAll.disabled = false;
+          elements.importFile.value = "";
+        }
+      }
+
       function scheduleLoad() {
         clearTimeout(debounceTimer);
         debounceTimer = setTimeout(() => {
@@ -1309,6 +1362,12 @@ function dashboardPage(root) {
         element.addEventListener("change", () => load({ preserveFacets: true }).catch(renderError));
       }
       elements.refresh.addEventListener("click", () => load().catch(renderError));
+      elements.importAll.addEventListener("click", () => {
+        elements.importFile.click();
+      });
+      elements.importFile.addEventListener("change", () => {
+        importBundleFile(elements.importFile.files?.[0]).catch(renderError);
+      });
       elements.collections.addEventListener("click", async (event) => {
         const target = event.target;
         if (target instanceof HTMLButtonElement && target.id === "clearCollection") {
@@ -2497,7 +2556,7 @@ async function createApp(store, options = {}) {
   const authToken = String(options.token || "");
   const readToken = String(options.readToken || "");
   const app = Fastify({
-    bodyLimit: 1024 * 1024,
+    bodyLimit: 50 * 1024 * 1024,
     logger: false
   });
   app.addContentTypeParser("application/x-www-form-urlencoded", {
@@ -2590,6 +2649,11 @@ async function createApp(store, options = {}) {
     const date = new Date().toISOString().slice(0, 10);
     reply.header("content-disposition", `attachment; filename="html-artifacts-${date}.json"`);
     return reply.type("application/json; charset=utf-8").send(bundle);
+  });
+
+  app.post("/api/import", async (request, reply) => {
+    const result = await store.importAllArtifactsBundle(request.body);
+    return reply.send(result);
   });
 
   app.get("/api/collections", async () => {
