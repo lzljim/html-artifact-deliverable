@@ -295,7 +295,7 @@ POST /api/artifacts/:id/notes/:noteId/resolve
 POST /api/artifacts/:id/notes/:noteId/reopen
 ```
 
-The dashboard groups collection artifacts and shows aggregate progress. It also includes a Review Dashboard that summarizes unresolved comments, risks, actions, blocked/risk items, and recently updated artifacts. Review cards act as quick filters through `review=open`, `review=risk`, `review=action`, `review=blocked`, and `review=recent`. The prioritized review queue sorts unresolved work by risk, action, question, and latest comment time.
+The dashboard groups collection artifacts and shows aggregate progress. It also includes a Review Dashboard that summarizes unresolved comments, risks, actions, blocked/risk items, and recently updated artifacts. Review cards act as quick filters through `review=open`, `review=risk`, `review=action`, `review=blocked`, and `review=recent`. The to-do/review queue is always visible, shows empty-state guidance when no work is pending, and sorts unresolved work by risk, action, question, and latest comment time.
 
 Collection-level review summaries are available through `GET /api/collections/:id/review-markdown`. This endpoint emits only unresolved review work, making it suitable for PR comments or chat follow-ups.
 

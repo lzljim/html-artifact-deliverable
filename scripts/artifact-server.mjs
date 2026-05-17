@@ -1332,7 +1332,7 @@ function dashboardPage(root) {
         const filters = [
           ["open", "未解决评论", stats.openNotes],
           ["risk", "风险", stats.riskNotes],
-          ["action", "待办", stats.actionNotes],
+          ["action", "待办入口", stats.actionNotes],
           ["blocked", "阻塞/风险项", stats.blockedOrRisk],
           ["recent", "最近 7 天更新", stats.recentUpdated]
         ];
@@ -1358,25 +1358,40 @@ function dashboardPage(root) {
               </button>
             \`).join("")}
           </div>
-          \${renderReviewQueue()}
+          \${renderReviewQueue(stats)}
         \`;
       }
 
-      function renderReviewQueue() {
+      function renderReviewQueue(stats) {
         const queue = (searchResult?.items || [])
           .filter((artifact) => artifact.needsReview || artifact.blockedOrRisk)
           .slice()
           .sort((left, right) => (right.reviewPriority || 0) - (left.reviewPriority || 0)
             || String(right.latestOpenNote?.at || right.lastNoteAt || right.updatedAt || "").localeCompare(String(left.latestOpenNote?.at || left.lastNoteAt || left.updatedAt || "")))
           .slice(0, 6);
+        const queueTitle = activeReviewFilter === "action" ? "待办队列" : "待办 / Review 队列";
+        const queueHint = activeReviewFilter === "action"
+          ? "只显示未解决待办评论"
+          : "按风险、待办、问题和最近评论排序";
         if (!queue.length) {
-          return '<div class="review-queue empty compact">当前筛选下没有待处理 review 项。</div>';
+          const emptyText = activeReviewFilter === "action"
+            ? "暂无待办。进入 artifact 详情页添加“待办”类型评论后，会出现在这里。"
+            : "暂无待办或未解决 review 项。添加“待办 / 风险 / 问题”类型评论后，会出现在这里。";
+          return \`
+            <div class="review-queue">
+              <div class="review-queue-head">
+                <h3>\${escapeHtml(queueTitle)}</h3>
+                <span>\${escapeHtml(queueHint)}</span>
+              </div>
+              <div class="empty compact">\${escapeHtml(emptyText)}</div>
+            </div>
+          \`;
         }
         return \`
           <div class="review-queue">
             <div class="review-queue-head">
-              <h3>待处理队列</h3>
-              <span>按风险、待办、问题和最近评论排序</span>
+              <h3>\${escapeHtml(queueTitle)}</h3>
+              <span>\${escapeHtml(queueHint)}</span>
             </div>
             <div class="queue-list">
               \${queue.map(renderQueueItem).join("")}

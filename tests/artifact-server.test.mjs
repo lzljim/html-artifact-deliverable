@@ -152,7 +152,8 @@ describe("artifact server", () => {
     assert.equal(dashboard.statusCode, 200);
     assert.match(dashboard.body, /Review Dashboard/);
     assert.match(dashboard.body, /data-review-filter=/);
-    assert.match(dashboard.body, /待处理队列/);
+    assert.match(dashboard.body, /待办 \/ Review 队列/);
+    assert.match(dashboard.body, /暂无待办或未解决 review 项/);
     assert.match(dashboard.body, /导出全部/);
     assert.match(dashboard.body, /导入全部/);
 
