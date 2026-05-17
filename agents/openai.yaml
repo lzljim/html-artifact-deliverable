@@ -1,0 +1,4 @@
+interface:
+  display_name: "HTML Artifact Deliverable"
+  short_description: "Create shareable, trackable HTML artifacts"
+  default_prompt: "Use $html-artifact-deliverable to turn this analysis into a shareable HTML artifact with checkpoint tracking."

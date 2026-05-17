@@ -1,0 +1,25 @@
+# Runtime artifact output
+artifacts/
+html-artifacts/
+*.log
+*.tmp
+*.temp
+
+# Dependency and build output
+node_modules/
+coverage/
+dist/
+build/
+.cache/
+
+# Environment and local machine state
+.env
+.env.*
+!.env.example
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
