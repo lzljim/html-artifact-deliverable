@@ -145,6 +145,23 @@ artifacts/
 }
 ```
 
+Review comments are stored in the same `notes` array. Older notes with only `id`, `at`, and `text` remain valid; the server normalizes missing review fields when reading:
+
+```json
+{
+  "id": "note-1779000000000",
+  "at": "2026-05-17T11:00:00+08:00",
+  "text": "阶段 1 需要补充验证截图",
+  "author": "reviewer name",
+  "category": "question",
+  "checkpointId": "phase-1",
+  "resolved": false,
+  "resolvedAt": null
+}
+```
+
+Recommended `category` values are `general`, `question`, `risk`, `action`, and `approval`.
+
 ## Checkpoint Rules
 
 For plans and phased work, include checkpoints in `state.json` instead of hard-coding completion state into `index.html`.
@@ -179,9 +196,11 @@ GET  /api/artifacts/:id/state
 PUT  /api/artifacts/:id/state
 POST /api/artifacts/:id/checkpoints/:checkpointId/toggle
 POST /api/artifacts/:id/notes
+POST /api/artifacts/:id/notes/:noteId/resolve
+POST /api/artifacts/:id/notes/:noteId/reopen
 ```
 
-The artifact detail page lets reviewers edit status, toggle checkpoints, maintain checkpoint notes, add artifact notes, and copy the current state as JSON or Markdown.
+The artifact detail page lets reviewers edit status, toggle checkpoints, maintain checkpoint notes, add artifact comments, filter comments by phase, resolve or reopen comments, and copy the current state or comment summary as JSON/Markdown.
 
 MVP storage should be JSON files, not a database. Use atomic writes for `state.json` when possible.
 

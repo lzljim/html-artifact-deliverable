@@ -104,6 +104,8 @@ describe("artifact server", () => {
     assert.equal(page.statusCode, 200);
     assert.match(page.body, /id="statusSelect"/);
     assert.match(page.body, /id="copyMarkdown"/);
+    assert.match(page.body, /id="copyComments"/);
+    assert.match(page.body, /id="noteFilter"/);
     assert.match(page.body, /checkpoint-note-save/);
   });
 
@@ -154,11 +156,35 @@ describe("artifact server", () => {
         "content-type": "application/json"
       },
       payload: {
-        text: "Review note."
+        text: "Review note.",
+        author: "Alice",
+        category: "question",
+        checkpointId: "stage-1"
       }
     });
     assert.equal(withNote.notes.at(-1).text, "Review note.");
+    assert.equal(withNote.notes.at(-1).author, "Alice");
+    assert.equal(withNote.notes.at(-1).category, "question");
+    assert.equal(withNote.notes.at(-1).checkpointId, "stage-1");
+    assert.equal(withNote.notes.at(-1).resolved, false);
     assert.equal(withNote.history.at(-1).type, "note.added");
+
+    const noteId = withNote.notes.at(-1).id;
+    const resolved = await injectJson({
+      method: "POST",
+      url: `/api/artifacts/review-plan/notes/${noteId}/resolve`
+    });
+    assert.equal(resolved.notes.at(-1).resolved, true);
+    assert.ok(resolved.notes.at(-1).resolvedAt);
+    assert.equal(resolved.history.at(-1).type, "note.resolved");
+
+    const reopened = await injectJson({
+      method: "POST",
+      url: `/api/artifacts/review-plan/notes/${noteId}/reopen`
+    });
+    assert.equal(reopened.notes.at(-1).resolved, false);
+    assert.equal(reopened.notes.at(-1).resolvedAt, null);
+    assert.equal(reopened.history.at(-1).type, "note.reopened");
 
     const toggled = await injectJson({
       method: "POST",
@@ -172,6 +198,8 @@ describe("artifact server", () => {
     assert.equal(diskState.status, "blocked");
     assert.equal(diskState.checkpoints[0].note, "Need reviewer confirmation.");
     assert.equal(diskState.checkpoints[0].done, true);
+    assert.equal(diskState.notes[0].author, "Alice");
+    assert.equal(diskState.notes[0].checkpointId, "stage-1");
   });
 
   it("returns clear errors for missing artifacts and invalid note writes", async () => {

@@ -77,7 +77,9 @@ Routes:
   GET  /api/artifacts/:id/state
   PUT  /api/artifacts/:id/state
   POST /api/artifacts/:id/checkpoints/:checkpointId/toggle
-  POST /api/artifacts/:id/notes`);
+  POST /api/artifacts/:id/notes
+  POST /api/artifacts/:id/notes/:noteId/resolve
+  POST /api/artifacts/:id/notes/:noteId/reopen`);
 }
 
 function isArtifactId(value) {
@@ -421,13 +423,39 @@ function createStore(root) {
     const item = {
       id: `note-${Date.now()}`,
       at: new Date().toISOString(),
-      text
+      text,
+      author: String(note?.author || "").trim(),
+      category: String(note?.category || "general").trim() || "general",
+      checkpointId: String(note?.checkpointId || "").trim(),
+      resolved: false,
+      resolvedAt: null
     };
     state.notes.push(item);
     state.history.push({
       at: item.at,
       type: "note.added",
       noteId: item.id
+    });
+
+    await putState(id, state);
+    return state;
+  }
+
+  async function setNoteResolved(id, noteId, resolved) {
+    const state = await getState(id);
+    const note = state.notes.find((item) => item.id === noteId);
+    if (!note) {
+      const error = new Error(`Note not found: ${noteId}`);
+      error.statusCode = 404;
+      throw error;
+    }
+
+    note.resolved = Boolean(resolved);
+    note.resolvedAt = note.resolved ? new Date().toISOString() : null;
+    state.history.push({
+      at: new Date().toISOString(),
+      type: note.resolved ? "note.resolved" : "note.reopened",
+      noteId
     });
 
     await putState(id, state);
@@ -448,6 +476,7 @@ function createStore(root) {
     putState,
     toggleCheckpoint,
     addNote,
+    setNoteResolved,
     getArtifactFileRoot
   };
 }
@@ -499,7 +528,12 @@ function normalizeState(state) {
       ? state.notes.map((item) => ({
           id: String(item.id || `note-${Date.now()}`),
           at: item.at || null,
-          text: String(item.text || "")
+          text: String(item.text || ""),
+          author: String(item.author || ""),
+          category: String(item.category || "general"),
+          checkpointId: String(item.checkpointId || ""),
+          resolved: Boolean(item.resolved),
+          resolvedAt: item.resolvedAt || null
         })).filter((item) => item.text)
       : [],
     history: Array.isArray(state?.history) ? state.history : []
@@ -880,17 +914,33 @@ function artifactPage(artifact, pageToken = "") {
           <div id="checkpoints" class="checkpoints"></div>
         </section>
         <section>
-          <h3>备注</h3>
+          <h3>评论</h3>
           <form id="noteForm">
-            <textarea id="noteText" rows="3" placeholder="添加备注"></textarea>
-            <button type="submit">保存备注</button>
+            <div class="note-fields">
+              <input id="noteAuthor" type="text" placeholder="作者">
+              <select id="noteCategory">
+                <option value="general">一般</option>
+                <option value="question">问题</option>
+                <option value="risk">风险</option>
+                <option value="action">待办</option>
+                <option value="approval">认可</option>
+              </select>
+            </div>
+            <select id="noteCheckpoint"></select>
+            <textarea id="noteText" rows="3" placeholder="留下评审意见"></textarea>
+            <button type="submit">保存评论</button>
           </form>
+          <label class="note-filter">
+            <span>筛选</span>
+            <select id="noteFilter"></select>
+          </label>
           <div id="notes" class="notes"></div>
         </section>
         <section>
           <h3>导出</h3>
           <div class="panel-actions">
             <button id="copyMarkdown" type="button">复制 Markdown 状态</button>
+            <button id="copyComments" type="button">复制评论摘要</button>
             <button id="copyState" type="button">复制状态 JSON</button>
           </div>
         </section>
@@ -905,11 +955,23 @@ function artifactPage(artifact, pageToken = "") {
       const statusSelect = document.querySelector("#statusSelect");
       const stateFeedback = document.querySelector("#stateFeedback");
       const noteForm = document.querySelector("#noteForm");
+      const noteAuthor = document.querySelector("#noteAuthor");
+      const noteCategory = document.querySelector("#noteCategory");
+      const noteCheckpoint = document.querySelector("#noteCheckpoint");
+      const noteFilter = document.querySelector("#noteFilter");
       const noteText = document.querySelector("#noteText");
       const copyMarkdown = document.querySelector("#copyMarkdown");
+      const copyComments = document.querySelector("#copyComments");
       const copyState = document.querySelector("#copyState");
       const statusLabels = ${JSON.stringify(STATUS_LABELS)};
       const statusOptions = Object.keys(statusLabels);
+      const noteCategoryLabels = {
+        general: "一般",
+        question: "问题",
+        risk: "风险",
+        action: "待办",
+        approval: "认可"
+      };
       const authToken = ${JSON.stringify(pageToken)} || new URLSearchParams(location.search).get("token") || "";
       let state = null;
 
@@ -937,6 +999,30 @@ function artifactPage(artifact, pageToken = "") {
         \`).join("");
       }
 
+      function checkpointTitle(checkpointId) {
+        const checkpoint = state?.checkpoints.find((item) => item.id === checkpointId);
+        return checkpoint ? checkpoint.title : "";
+      }
+
+      function noteCategoryLabel(category) {
+        return noteCategoryLabels[category] || category || "一般";
+      }
+
+      function renderNoteControls() {
+        const checkpointOptions = state.checkpoints.map((item) => \`
+          <option value="\${escapeHtml(item.id)}">\${escapeHtml(item.title)}</option>
+        \`).join("");
+        noteCheckpoint.innerHTML = '<option value="">不关联阶段</option>' + checkpointOptions;
+        const selectedFilter = noteFilter.value || "open";
+        noteFilter.innerHTML = [
+          '<option value="open">未解决评论</option>',
+          '<option value="all">全部评论</option>',
+          '<option value="resolved">已解决评论</option>',
+          ...state.checkpoints.map((item) => \`<option value="checkpoint:\${escapeHtml(item.id)}">阶段：\${escapeHtml(item.title)}</option>\`)
+        ].join("");
+        noteFilter.value = [...noteFilter.options].some((option) => option.value === selectedFilter) ? selectedFilter : "open";
+      }
+
       function withAuthPath(path) {
         if (!authToken) {
           return path;
@@ -950,6 +1036,7 @@ function artifactPage(artifact, pageToken = "") {
         statusLabel.textContent = statusLabels[status] || status;
         statusLabel.dataset.status = status;
         statusSelect.value = status;
+        renderNoteControls();
         if (!state.checkpoints.length) {
           checkpoints.innerHTML = '<div class="empty compact">这个 artifact 没有配置阶段，适合作为资料查看和备注沉淀。</div>';
         } else {
@@ -970,16 +1057,43 @@ function artifactPage(artifact, pageToken = "") {
           \`).join("");
         }
 
+        const visibleNotes = filteredNotes();
         if (!state.notes.length) {
-          notes.innerHTML = '<div class="empty compact">暂无备注。可以记录 review 结论、阻塞点或下一步动作。</div>';
+          notes.innerHTML = '<div class="empty compact">暂无评论。可以记录 review 结论、阻塞点或下一步动作。</div>';
+        } else if (!visibleNotes.length) {
+          notes.innerHTML = '<div class="empty compact">当前筛选下没有评论。</div>';
         } else {
-          notes.innerHTML = state.notes.slice().reverse().map((item) => \`
-            <article class="note">
-              <time>\${escapeHtml(formatDate(item.at))}</time>
+          notes.innerHTML = visibleNotes.slice().reverse().map((item) => \`
+            <article class="note \${item.resolved ? "resolved" : ""}">
+              <div class="note-meta">
+                <span>\${escapeHtml(noteCategoryLabel(item.category))}</span>
+                \${item.author ? '<span>' + escapeHtml(item.author) + '</span>' : ""}
+                \${item.checkpointId ? '<span>' + escapeHtml(checkpointTitle(item.checkpointId) || item.checkpointId) + '</span>' : '<span>全局</span>'}
+                <time>\${escapeHtml(formatDate(item.at))}</time>
+              </div>
               <p>\${escapeHtml(item.text)}</p>
+              <div class="note-actions">
+                <span>\${item.resolved ? "已解决" + (item.resolvedAt ? " · " + escapeHtml(formatDate(item.resolvedAt)) : "") : "未解决"}</span>
+                <button type="button" data-note-id="\${escapeHtml(item.id)}" data-note-action="\${item.resolved ? "reopen" : "resolve"}">\${item.resolved ? "重新打开" : "标记解决"}</button>
+              </div>
             </article>
           \`).join("");
         }
+      }
+
+      function filteredNotes() {
+        const filter = noteFilter.value || "open";
+        if (filter === "all") {
+          return state.notes;
+        }
+        if (filter === "resolved") {
+          return state.notes.filter((item) => item.resolved);
+        }
+        if (filter.startsWith("checkpoint:")) {
+          const checkpointId = filter.slice("checkpoint:".length);
+          return state.notes.filter((item) => item.checkpointId === checkpointId);
+        }
+        return state.notes.filter((item) => !item.resolved);
       }
 
       async function fetchJson(url, options = {}) {
@@ -1133,16 +1247,50 @@ function artifactPage(artifact, pageToken = "") {
             headers: {
               "Content-Type": "application/json"
             },
-            body: JSON.stringify({ text })
+            body: JSON.stringify({
+              text,
+              author: noteAuthor.value.trim(),
+              category: noteCategory.value,
+              checkpointId: noteCheckpoint.value
+            })
           });
           noteText.value = "";
           renderState();
-          setFeedback("备注已保存。");
+          setFeedback("评论已保存。");
           setTimeout(() => {
             setFeedback("");
           }, 1400);
         } catch (error) {
           setFeedback(error.message, "error");
+        }
+      });
+
+      noteFilter.addEventListener("change", () => {
+        if (state) {
+          renderState();
+        }
+      });
+
+      notes.addEventListener("click", async (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLButtonElement) || !target.dataset.noteId) {
+          return;
+        }
+        const action = target.dataset.noteAction;
+        target.disabled = true;
+        try {
+          state = await fetchJson(\`/api/artifacts/\${encodeURIComponent(artifactId)}/notes/\${encodeURIComponent(target.dataset.noteId)}/\${action}\`, {
+            method: "POST"
+          });
+          renderState();
+          setFeedback(action === "resolve" ? "评论已解决。" : "评论已重新打开。");
+          setTimeout(() => {
+            setFeedback("");
+          }, 1400);
+        } catch (error) {
+          setFeedback(error.message, "error");
+        } finally {
+          target.disabled = false;
         }
       });
 
@@ -1164,13 +1312,42 @@ function artifactPage(artifact, pageToken = "") {
         }
 
         if (state.notes.length) {
-          lines.push("", "## 备注");
-          for (const item of state.notes) {
-            lines.push("- " + (item.at ? formatDate(item.at) + "：" : "") + item.text);
-          }
+          lines.push("", "## 评论");
+          lines.push(...commentsMarkdownLines());
         }
 
         return lines.join("\\n");
+      }
+
+      function commentsMarkdownLines() {
+        const groups = new Map([["", []]]);
+        for (const checkpoint of state.checkpoints) {
+          groups.set(checkpoint.id, []);
+        }
+        for (const item of state.notes) {
+          const key = groups.has(item.checkpointId) ? item.checkpointId : "";
+          groups.get(key).push(item);
+        }
+
+        const lines = [];
+        for (const [checkpointId, items] of groups) {
+          if (!items.length) {
+            continue;
+          }
+          const title = checkpointId ? checkpointTitle(checkpointId) || checkpointId : "全局";
+          lines.push("### " + title);
+          for (const item of items) {
+            const meta = [
+              item.resolved ? "已解决" : "未解决",
+              noteCategoryLabel(item.category),
+              item.author || "",
+              item.at ? formatDate(item.at) : ""
+            ].filter(Boolean).join(" / ");
+            lines.push("- " + meta + "：" + item.text);
+          }
+          lines.push("");
+        }
+        return lines.length && lines.at(-1) === "" ? lines.slice(0, -1) : lines;
       }
 
       copyMarkdown.addEventListener("click", async () => {
@@ -1182,6 +1359,19 @@ function artifactPage(artifact, pageToken = "") {
         copyMarkdown.textContent = "已复制";
         setTimeout(() => {
           copyMarkdown.textContent = "复制 Markdown 状态";
+        }, 1200);
+      });
+
+      copyComments.addEventListener("click", async () => {
+        if (!state) {
+          setFeedback("状态还没有加载完成。", "error");
+          return;
+        }
+        const lines = ["# " + artifactTitle + " 评论摘要", "", ...commentsMarkdownLines()];
+        await navigator.clipboard.writeText(lines.join("\\n"));
+        copyComments.textContent = "已复制";
+        setTimeout(() => {
+          copyComments.textContent = "复制评论摘要";
         }, 1200);
       });
 
@@ -1540,7 +1730,10 @@ function pageShell(title, body) {
       font-size: 12px;
     }
     .status-control select,
-    .checkpoint-note textarea {
+    .checkpoint-note textarea,
+    #noteForm input,
+    #noteForm select,
+    .note-filter select {
       width: 100%;
       min-height: 38px;
       border: 1px solid var(--border);
@@ -1615,17 +1808,51 @@ function pageShell(title, body) {
       border-radius: 8px;
       padding: 10px;
     }
-    .note time {
+    .note.resolved {
+      background: var(--panel-soft);
+    }
+    .note-meta,
+    .note-actions {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
       color: var(--muted);
+      font-size: 12px;
+    }
+    .note-meta span,
+    .note-actions span {
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 2px 7px;
+    }
+    .note-actions {
+      justify-content: space-between;
+      margin-top: 8px;
+    }
+    .note-actions button {
+      padding: 4px 8px;
       font-size: 12px;
     }
     .note p {
       color: var(--text);
-      margin: 6px 0 0;
+      margin: 8px 0 0;
     }
     #noteForm {
       display: grid;
       gap: 8px;
+    }
+    .note-fields {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 112px;
+      gap: 8px;
+    }
+    .note-filter {
+      display: grid;
+      gap: 6px;
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 12px;
     }
     .panel-actions {
       display: grid;
@@ -1676,6 +1903,9 @@ function pageShell(title, body) {
       }
       .checkpoint-note-save {
         justify-self: start;
+      }
+      .note-fields {
+        grid-template-columns: 1fr;
       }
     }
     @media (prefers-color-scheme: dark) {
@@ -1808,6 +2038,24 @@ async function createApp(store, options = {}) {
       });
     }
     return store.addNote(request.params.id, request.body);
+  });
+
+  app.post("/api/artifacts/:id/notes/:noteId/resolve", async (request, reply) => {
+    if (!(await store.getArtifact(request.params.id))) {
+      return reply.code(404).send({
+        error: "Artifact not found."
+      });
+    }
+    return store.setNoteResolved(request.params.id, request.params.noteId, true);
+  });
+
+  app.post("/api/artifacts/:id/notes/:noteId/reopen", async (request, reply) => {
+    if (!(await store.getArtifact(request.params.id))) {
+      return reply.code(404).send({
+        error: "Artifact not found."
+      });
+    }
+    return store.setNoteResolved(request.params.id, request.params.noteId, false);
   });
 
   app.get("/files/:id/*", async (request, reply) => {
