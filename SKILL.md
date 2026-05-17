@@ -90,6 +90,7 @@ Default behavior:
 - The dashboard can group related artifacts into collections with aggregate progress and collection-level Markdown export.
 - Archived artifacts use `state.status = "archived"`; they are hidden from default dashboard search but remain available through direct URLs, collections, and explicit archive filters.
 - Single artifacts can be exported as Markdown status reports or JSON migration bundles through the detail page and API.
+- The dashboard provides one-click full export through `GET /api/export`; restore it on another machine with `node scripts/import-artifact-bundle.mjs --bundle <file.json>`.
 - Health check: `GET /api/health`
 
 Use explicit flags when needed:

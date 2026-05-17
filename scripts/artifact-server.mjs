@@ -78,6 +78,7 @@ Routes:
   GET  /api/health
   GET  /api/artifacts
   GET  /api/artifacts/search
+  GET  /api/export
   GET  /api/collections
   GET  /api/collections/:id/markdown
   GET  /api/artifacts/:id
@@ -511,6 +512,36 @@ function createStore(root) {
     };
   }
 
+  async function getAllArtifactsBundle() {
+    const artifacts = await listArtifacts();
+    const collectionConfig = await readJson(path.join(absoluteRoot, "collection.json"), {
+      collections: []
+    });
+    const bundledArtifacts = [];
+
+    for (const artifact of artifacts) {
+      const dir = artifactDir(artifact.id);
+      const indexPath = path.join(dir, artifact.entry || "index.html");
+      const metadata = await readJson(path.join(dir, "artifact.json"), artifact);
+      const state = await getState(artifact.id);
+      const indexHtml = await fs.readFile(indexPath, "utf8");
+      bundledArtifacts.push({
+        id: artifact.id,
+        artifact: metadata,
+        state,
+        indexHtml
+      });
+    }
+
+    return {
+      format: "html-artifact-deliverable.all.v1",
+      exportedAt: new Date().toISOString(),
+      artifactCount: bundledArtifacts.length,
+      collectionConfig,
+      artifacts: bundledArtifacts
+    };
+  }
+
   async function putState(id, state) {
     const normalized = normalizeState(state);
     await writeJsonAtomic(path.join(artifactDir(id), "state.json"), normalized);
@@ -603,6 +634,7 @@ function createStore(root) {
     getArtifact,
     getArtifactMarkdown,
     getArtifactBundle,
+    getAllArtifactsBundle,
     getState,
     putState,
     toggleCheckpoint,
@@ -962,6 +994,7 @@ function dashboardPage(root) {
           <p>发布目录：<code>${escapeHtml(root)}</code></p>
         </div>
         <div class="toolbar">
+          <a class="button-link" id="exportAll" href="${escapeHtml(appendToken("/api/export", ""))}" download="html-artifacts-bundle.json">导出全部</a>
           <button id="refresh" type="button">刷新</button>
         </div>
       </header>
@@ -1037,6 +1070,7 @@ function dashboardPage(root) {
       let debounceTimer = null;
       const authToken = new URLSearchParams(location.search).get("token") || "";
       let activeCollection = new URLSearchParams(location.search).get("collection") || "";
+      document.querySelector("#exportAll").href = withAuthPath("/api/export");
 
       function escapeHtml(value) {
         return String(value ?? "")
@@ -1305,6 +1339,7 @@ function artifactPage(artifact, pageToken = "", readOnly = false) {
   const backHref = appendToken("/", pageToken);
   const markdownHref = appendToken(`/api/artifacts/${encodeURIComponent(artifact.id)}/markdown`, pageToken);
   const bundleHref = appendToken(`/api/artifacts/${encodeURIComponent(artifact.id)}/export`, pageToken);
+  const fullBundleHref = appendToken("/api/export", pageToken);
   return pageShell(`${title} - Artifact`, `
     <main class="artifact-view">
       <section class="artifact-frame">
@@ -1361,6 +1396,7 @@ function artifactPage(artifact, pageToken = "", readOnly = false) {
             <button id="copyMarkdown" type="button">复制 Markdown 状态</button>
             <a class="button-link" href="${escapeHtml(markdownHref)}" download="${escapeHtml(artifact.id)}-status.md">下载 Markdown</a>
             <a class="button-link" href="${escapeHtml(bundleHref)}" download="${escapeHtml(artifact.id)}-artifact-bundle.json">下载迁移包</a>
+            <a class="button-link" href="${escapeHtml(fullBundleHref)}" download="html-artifacts-bundle.json">导出全部</a>
             <button id="copyComments" type="button">复制评论摘要</button>
             <button id="copyState" type="button">复制状态 JSON</button>
           </div>
@@ -2547,6 +2583,13 @@ async function createApp(store, options = {}) {
 
   app.get("/api/artifacts/search", async (request) => {
     return store.searchArtifacts(getSearchFilters(request.query));
+  });
+
+  app.get("/api/export", async (request, reply) => {
+    const bundle = await store.getAllArtifactsBundle();
+    const date = new Date().toISOString().slice(0, 10);
+    reply.header("content-disposition", `attachment; filename="html-artifacts-${date}.json"`);
+    return reply.type("application/json; charset=utf-8").send(bundle);
   });
 
   app.get("/api/collections", async () => {

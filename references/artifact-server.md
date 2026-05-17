@@ -99,6 +99,14 @@ For quick publishing, these fields are inferred when omitted:
 
 Pass `--checkpoint` to use explicit checkpoints instead of inferred ones, or `--no-auto-checkpoints` to publish without generated checkpoints.
 
+Import a full bundle exported from the dashboard or `GET /api/export`:
+
+```bash
+node scripts/import-artifact-bundle.mjs --bundle html-artifacts-2026-05-17.json --root <artifact-root>
+```
+
+The import script writes every artifact directory plus `collection.json`. Existing artifact directories are not replaced unless `--overwrite` is passed.
+
 Defaults:
 
 - Artifact root: `~/.codex/html-artifacts`
@@ -271,6 +279,7 @@ GET  /artifacts/:id
 GET  /api/health
 GET  /api/artifacts
 GET  /api/artifacts/search
+GET  /api/export
 GET  /api/collections
 GET  /api/collections/:id/markdown
 GET  /api/artifacts/:id
@@ -290,6 +299,7 @@ Artifact-level export endpoints:
 
 - `GET /api/artifacts/:id/markdown`: returns a Markdown status report generated from `artifact.json` plus `state.json`, suitable for PRs and weekly reports.
 - `GET /api/artifacts/:id/export`: returns a JSON migration bundle with artifact metadata, normalized state, `index.html` content, and `exportedAt`.
+- `GET /api/export`: returns a full-root migration bundle with `collection.json` plus every artifact's `index.html`, `artifact.json`, and normalized `state.json`.
 
 MVP storage should be JSON files, not a database. Use atomic writes for `state.json` when possible.
 

@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { createApp, createStore } from "../scripts/artifact-server.mjs";
+import { importBundle } from "../scripts/import-artifact-bundle.mjs";
 
 let tempRoot;
 let app;
@@ -116,6 +117,7 @@ describe("artifact server", () => {
     assert.match(page.body, /id="copyMarkdown"/);
     assert.match(page.body, /id="copyComments"/);
     assert.match(page.body, /id="noteFilter"/);
+    assert.match(page.body, /导出全部/);
     assert.match(page.body, /checkpoint-note-save/);
   });
 
@@ -398,6 +400,74 @@ describe("artifact server", () => {
     assert.ok(bundle.exportedAt);
   });
 
+  it("exports all artifacts and imports them into another root", async () => {
+    await writeJson(path.join(tempRoot, "collection.json"), {
+      collections: [
+        {
+          id: "migration",
+          title: "Migration",
+          artifactIds: ["first-plan", "old-plan"]
+        }
+      ]
+    });
+    await writeArtifact("first-plan", {
+      title: "First Plan",
+      collection: "migration"
+    }, {
+      checkpoints: [
+        {
+          id: "stage-1",
+          title: "Stage 1",
+          done: true,
+          doneAt: "2026-05-17T00:00:00.000Z",
+          note: "Done."
+        }
+      ]
+    });
+    await writeArtifact("old-plan", {
+      title: "Old Plan"
+    }, {
+      status: "archived"
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/export"
+    });
+    assert.equal(response.statusCode, 200);
+    assert.match(response.headers["content-type"], /application\/json/);
+    assert.match(response.headers["content-disposition"], /html-artifacts-\d{4}-\d{2}-\d{2}\.json/);
+    const bundle = response.json();
+    assert.equal(bundle.format, "html-artifact-deliverable.all.v1");
+    assert.equal(bundle.artifactCount, 2);
+    assert.deepEqual(bundle.artifacts.map((item) => item.id).sort(), ["first-plan", "old-plan"]);
+    assert.equal(bundle.artifacts.find((item) => item.id === "old-plan").state.status, "archived");
+
+    const bundlePath = path.join(tempRoot, "bundle.json");
+    const importRoot = await fs.mkdtemp(path.join(os.tmpdir(), "artifact-import-test-"));
+    await writeJson(bundlePath, bundle);
+    try {
+      const imported = await importBundle({
+        bundlePath,
+        root: importRoot
+      });
+      assert.equal(imported.artifactCount, 2);
+
+      const importedStore = createStore(importRoot);
+      const artifacts = await importedStore.listArtifacts();
+      assert.deepEqual(artifacts.map((item) => item.id).sort(), ["first-plan", "old-plan"]);
+      const oldState = await importedStore.getState("old-plan");
+      assert.equal(oldState.status, "archived");
+      const collectionConfig = JSON.parse(await fs.readFile(path.join(importRoot, "collection.json"), "utf8"));
+      assert.equal(collectionConfig.collections[0].id, "migration");
+    } finally {
+      await fs.rm(importRoot, {
+        recursive: true,
+        force: true
+      });
+    }
+  });
+
   it("protects pages, APIs, and artifact files when a token is configured", async () => {
     await writeArtifact("secure-plan", {
       title: "Secure Plan"
@@ -512,6 +582,13 @@ describe("artifact server", () => {
     });
     assert.equal(markdownWithReadToken.statusCode, 200);
     assert.match(markdownWithReadToken.body, /Readonly Plan/);
+
+    const allExportWithReadToken = await app.inject({
+      method: "GET",
+      url: "/api/export?token=read-token"
+    });
+    assert.equal(allExportWithReadToken.statusCode, 200);
+    assert.equal(allExportWithReadToken.json().artifactCount, 1);
 
     const blockedToggle = await app.inject({
       method: "POST",

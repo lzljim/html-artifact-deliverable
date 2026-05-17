@@ -110,6 +110,15 @@ npm run check
 - `archived` 状态表示已归档。归档 artifact 默认不出现在工作台搜索结果里，但直接 URL、项目集和显式“包含归档 / 只看归档”筛选仍可访问。
 - `GET /api/artifacts/<id>/markdown` 会从 `state.json` 生成可贴到 PR / 周报的 Markdown 状态报告。
 - `GET /api/artifacts/<id>/export` 会导出包含 `artifact.json` 视图、`state.json` 和 `index.html` 内容的 JSON 迁移包。
+- 首页右上角“导出全部”会请求 `GET /api/export`，一次性导出 `collection.json` 和所有 artifact 的 HTML、元数据、状态。
+
+在另一台机器恢复全部 artifact：
+
+```bash
+node scripts/import-artifact-bundle.mjs --bundle html-artifacts-2026-05-17.json
+```
+
+目标目录默认是 `~/.codex/html-artifacts`，也可以通过 `--root <artifact-root>` 指定。若目标机器已有同名 artifact，脚本默认停止，确认要替换时再加 `--overwrite`。
 
 ## 目录结构
 
