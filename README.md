@@ -111,6 +111,8 @@ npm run check
 - Review Dashboard 汇总未解决评论、风险、待办、阻塞/风险项、最近 7 天更新，并支持点击这些指标快速筛选列表。
 - Review Dashboard 会固定展示“待办 / Review 队列”，按风险、待办、问题和最近评论排序；没有待办时也会提示如何添加待办评论。
 - Artifact 卡片和项目集卡片会显示未解决评论、风险、待办、最近未解决评论等 review 信息，减少逐个打开页面查看的成本。
+- 项目集会派生健康状态：正常、需 review、有风险、阻塞；首页提供项目集进度矩阵，按 artifact 行展示阶段完成情况和风险/评论标记。
+- 项目集可按最近更新、健康状态、完成率、阻塞数、未解决评论排序，方便先处理最需要 review 的项目集。
 - 项目集卡片的“复制 Review”会导出只包含未解决项、风险和待办的 Markdown 摘要。
 - `GET /api/artifacts/<id>/markdown` 会从 `state.json` 生成可贴到 PR / 周报的 Markdown 状态报告。
 - `GET /api/artifacts/<id>/export` 会导出包含 `artifact.json` 视图、`state.json` 和 `index.html` 内容的 JSON 迁移包。

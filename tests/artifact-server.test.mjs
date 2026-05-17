@@ -154,6 +154,8 @@ describe("artifact server", () => {
     assert.match(dashboard.body, /data-review-filter=/);
     assert.match(dashboard.body, /待办 \/ Review 队列/);
     assert.match(dashboard.body, /暂无待办或未解决 review 项/);
+    assert.match(dashboard.body, /项目集进度矩阵/);
+    assert.match(dashboard.body, /id="collectionSort"/);
     assert.match(dashboard.body, /导出全部/);
     assert.match(dashboard.body, /导入全部/);
 
@@ -312,6 +314,13 @@ describe("artifact server", () => {
           text: "Needs owner.",
           category: "action",
           resolved: false
+        },
+        {
+          id: "note-2",
+          at: "2026-05-17T00:30:00.000Z",
+          text: "Risk needs mitigation.",
+          category: "risk",
+          resolved: false
         }
       ]
     });
@@ -319,6 +328,7 @@ describe("artifact server", () => {
       title: "Plan Note",
       collection: "metadata-upgrade"
     }, {
+      status: "blocked",
       checkpoints: [
         {
           id: "plan",
@@ -340,9 +350,16 @@ describe("artifact server", () => {
     assert.equal(collections[0].checkpointCount, 2);
     assert.equal(collections[0].doneCheckpointCount, 1);
     assert.equal(collections[0].progressPercent, 50);
-    assert.equal(collections[0].noteCount, 1);
-    assert.equal(collections[0].openNoteCount, 1);
+    assert.equal(collections[0].noteCount, 2);
+    assert.equal(collections[0].openNoteCount, 2);
+    assert.equal(collections[0].riskNoteCount, 1);
     assert.equal(collections[0].actionNoteCount, 1);
+    assert.equal(collections[0].blockedArtifactCount, 1);
+    assert.equal(collections[0].riskArtifactCount, 1);
+    assert.equal(collections[0].reviewArtifactCount, 1);
+    assert.equal(collections[0].healthStatus, "blocked");
+    assert.equal(collections[0].healthLabel, "阻塞");
+    assert.equal(collections[0].artifacts.find((item) => item.id === "research-note").checkpoints[0].title, "Research");
 
     const filtered = await injectJson({
       method: "GET",
@@ -359,6 +376,7 @@ describe("artifact server", () => {
     assert.match(markdown.body, /# Metadata Upgrade/);
     assert.match(markdown.body, /Research Note/);
     assert.match(markdown.body, /阶段进度：1\/2/);
+    assert.match(markdown.body, /项目集健康：阻塞/);
 
     const reviewMarkdown = await app.inject({
       method: "GET",
@@ -367,7 +385,8 @@ describe("artifact server", () => {
     assert.equal(reviewMarkdown.statusCode, 200);
     assert.match(reviewMarkdown.headers["content-type"], /text\/markdown/);
     assert.match(reviewMarkdown.body, /# Metadata Upgrade Review 摘要/);
-    assert.match(reviewMarkdown.body, /待办：Needs owner\./);
+    assert.match(reviewMarkdown.body, /- 待办：1/);
+    assert.match(reviewMarkdown.body, /最近待处理：风险：Risk needs mitigation\./);
   });
 
   it("hides archived artifacts by default but keeps them searchable", async () => {
