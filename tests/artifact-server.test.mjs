@@ -265,6 +265,43 @@ describe("artifact server", () => {
     assert.equal(diskState.notes[0].checkpointId, "stage-1");
   });
 
+  it("keeps current work ahead of done artifacts while sorting inside status groups", async () => {
+    await writeArtifact("done-latest", {
+      title: "Done Latest",
+      updatedAt: "2026-05-17T03:00:00.000Z"
+    }, {
+      status: "done"
+    });
+    await writeArtifact("active-newer", {
+      title: "Active Newer",
+      updatedAt: "2026-05-17T02:00:00.000Z"
+    });
+    await writeArtifact("active-older", {
+      title: "Active Older",
+      updatedAt: "2026-05-17T01:00:00.000Z"
+    });
+
+    const defaultSearch = await injectJson({
+      method: "GET",
+      url: "/api/artifacts/search?sort=updated-desc"
+    });
+    assert.deepEqual(defaultSearch.items.map((item) => item.id), ["active-newer", "active-older", "done-latest"]);
+
+    const doneSearch = await injectJson({
+      method: "GET",
+      url: "/api/artifacts/search?status=done&sort=updated-desc"
+    });
+    assert.deepEqual(doneSearch.items.map((item) => item.id), ["done-latest"]);
+
+    const dashboard = await app.inject({
+      method: "GET",
+      url: "/"
+    });
+    assert.equal(dashboard.statusCode, 200);
+    assert.match(dashboard.body, /组内最近更新/);
+    assert.match(dashboard.body, /statusGroupOrder = \["blocked", "in-progress", "draft", "done", "archived"\]/);
+  });
+
   it("returns clear errors for missing artifacts and invalid note writes", async () => {
     await writeArtifact("note-plan");
 
@@ -359,6 +396,7 @@ describe("artifact server", () => {
     assert.equal(collections[0].reviewArtifactCount, 1);
     assert.equal(collections[0].healthStatus, "blocked");
     assert.equal(collections[0].healthLabel, "阻塞");
+    assert.deepEqual(collections[0].artifacts.map((item) => item.id), ["plan-note", "research-note"]);
     assert.equal(collections[0].artifacts.find((item) => item.id === "research-note").checkpoints[0].title, "Research");
 
     const filtered = await injectJson({

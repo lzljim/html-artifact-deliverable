@@ -857,7 +857,8 @@ function buildCollections(configs, artifacts) {
   return [...collections.values()].map((collection) => {
     const collectionArtifacts = collection.artifactIds
       .map((id) => artifactById.get(id))
-      .filter(Boolean);
+      .filter(Boolean)
+      .sort(compareArtifacts("updated-desc"));
     const checkpointCount = collectionArtifacts.reduce((sum, item) => sum + item.checkpointCount, 0);
     const doneCheckpointCount = collectionArtifacts.reduce((sum, item) => sum + item.doneCheckpointCount, 0);
     const noteCount = collectionArtifacts.reduce((sum, item) => sum + item.noteCount, 0);
@@ -1003,6 +1004,17 @@ function compareArtifactsForReview(left, right) {
     || left.title.localeCompare(right.title, "zh-CN");
 }
 
+function artifactStatusRank(status) {
+  const ranks = {
+    blocked: 0,
+    "in-progress": 1,
+    draft: 2,
+    done: 3,
+    archived: 4
+  };
+  return ranks[status] ?? 99;
+}
+
 function noteCategoryLabel(category) {
   const labels = {
     general: "一般",
@@ -1119,6 +1131,10 @@ function compareArtifacts(sort) {
   return (left, right) => {
     if (sort === "review") {
       return compareArtifactsForReview(left, right);
+    }
+    const statusOrder = artifactStatusRank(left.status) - artifactStatusRank(right.status);
+    if (statusOrder) {
+      return statusOrder;
     }
     if (sort === "title") {
       return left.title.localeCompare(right.title, "zh-CN");
@@ -1258,10 +1274,10 @@ function dashboardPage(root) {
         <label>
           <span>排序</span>
           <select id="sort">
-            <option value="updated-desc">最近更新</option>
-            <option value="created-desc">最近创建</option>
-            <option value="progress">进度优先</option>
-            <option value="title">标题</option>
+            <option value="updated-desc">组内最近更新</option>
+            <option value="created-desc">组内最近创建</option>
+            <option value="progress">组内进度优先</option>
+            <option value="title">组内标题</option>
           </select>
         </label>
       </section>
@@ -1303,6 +1319,7 @@ function dashboardPage(root) {
       let activeCollection = initialParams.get("collection") || "";
       let activeReviewFilter = initialParams.get("review") || "";
       let collectionSort = "updated-desc";
+      const statusGroupOrder = ["blocked", "in-progress", "draft", "done", "archived"];
       document.querySelector("#exportAll").href = withAuthPath("/api/export");
 
       function escapeHtml(value) {
@@ -1643,7 +1660,13 @@ function dashboardPage(root) {
           }
           grouped.get(key).items.push(item);
         }
-        return [...grouped.entries()];
+        const knownGroups = statusGroupOrder
+          .filter((status) => grouped.has(status))
+          .map((status) => [status, grouped.get(status)]);
+        const unknownGroups = [...grouped.entries()]
+          .filter(([status]) => !statusGroupOrder.includes(status))
+          .sort((left, right) => left[1].label.localeCompare(right[1].label, "zh-CN"));
+        return [...knownGroups, ...unknownGroups];
       }
 
       function renderActiveFilters() {
