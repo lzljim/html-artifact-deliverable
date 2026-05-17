@@ -76,6 +76,28 @@ describe("artifact server", () => {
           doneAt: null,
           note: ""
         }
+      ],
+      notes: [
+        {
+          id: "risk-1",
+          at: "2026-05-17T02:00:00.000Z",
+          text: "Risk needs review.",
+          author: "Reviewer",
+          category: "risk",
+          checkpointId: "phase-1",
+          resolved: false,
+          resolvedAt: null
+        },
+        {
+          id: "action-1",
+          at: "2026-05-17T03:00:00.000Z",
+          text: "Action needs owner.",
+          author: "Reviewer",
+          category: "action",
+          checkpointId: "",
+          resolved: false,
+          resolvedAt: null
+        }
       ]
     });
     await writeArtifact("architecture-note", {
@@ -107,12 +129,27 @@ describe("artifact server", () => {
     });
     assert.equal(search.filteredCount, 1);
     assert.equal(search.items[0].id, "plan-alpha");
+    assert.equal(search.items[0].openNoteCount, 2);
+    assert.equal(search.items[0].riskNoteCount, 1);
+    assert.equal(search.items[0].actionNoteCount, 1);
+    assert.equal(search.stats.openNotes, 2);
+    assert.equal(search.stats.riskNotes, 1);
+    assert.equal(search.stats.actionNotes, 1);
+    assert.equal(search.stats.reviewArtifacts, 1);
+
+    const riskSearch = await injectJson({
+      method: "GET",
+      url: "/api/artifacts/search?review=risk"
+    });
+    assert.deepEqual(riskSearch.items.map((item) => item.id), ["plan-alpha"]);
 
     const dashboard = await app.inject({
       method: "GET",
       url: "/"
     });
     assert.equal(dashboard.statusCode, 200);
+    assert.match(dashboard.body, /Review Dashboard/);
+    assert.match(dashboard.body, /data-review-filter=/);
     assert.match(dashboard.body, /导出全部/);
     assert.match(dashboard.body, /导入全部/);
 

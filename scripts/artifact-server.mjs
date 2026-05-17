@@ -456,6 +456,19 @@ function createStore(root) {
       const artifactIds = new Set((collection?.artifacts || []).map((artifact) => artifact.id));
       items = items.filter((artifact) => artifactIds.has(artifact.id));
     }
+    if (filters.review === "open") {
+      items = items.filter((artifact) => artifact.openNoteCount > 0);
+    } else if (filters.review === "risk") {
+      items = items.filter((artifact) => artifact.riskNoteCount > 0);
+    } else if (filters.review === "action") {
+      items = items.filter((artifact) => artifact.actionNoteCount > 0);
+    } else if (filters.review === "blocked") {
+      items = items.filter((artifact) => artifact.blockedOrRisk);
+    } else if (filters.review === "recent") {
+      const since = Date.now() - 7 * 24 * 60 * 60 * 1000;
+      items = items.filter((artifact) => Date.parse(artifact.updatedAt || artifact.lastNoteAt || "") >= since
+        || Date.parse(artifact.lastNoteAt || "") >= since);
+    }
 
     items = items.slice().sort(compareArtifacts(filters.sort || "updated-desc"));
     return {
@@ -669,6 +682,7 @@ function defaultState() {
 function normalizeArtifact(metadata, state, fallbackId) {
   const checkpointCount = state.checkpoints.length;
   const doneCheckpointCount = state.checkpoints.filter((item) => item.done).length;
+  const review = reviewMetrics(state);
   return {
     id: String(metadata.id || fallbackId),
     title: String(metadata.title || metadata.id || fallbackId),
@@ -685,7 +699,30 @@ function normalizeArtifact(metadata, state, fallbackId) {
     checkpointCount,
     doneCheckpointCount,
     progressPercent: checkpointCount ? Math.round((doneCheckpointCount / checkpointCount) * 100) : null,
-    noteCount: state.notes.length
+    noteCount: state.notes.length,
+    openNoteCount: review.openNoteCount,
+    riskNoteCount: review.riskNoteCount,
+    actionNoteCount: review.actionNoteCount,
+    questionNoteCount: review.questionNoteCount,
+    lastNoteAt: review.lastNoteAt,
+    needsReview: review.openNoteCount > 0 || review.riskNoteCount > 0 || review.actionNoteCount > 0,
+    blockedOrRisk: (state.status || "in-progress") === "blocked" || review.riskNoteCount > 0
+  };
+}
+
+function reviewMetrics(state) {
+  const openNotes = state.notes.filter((item) => !item.resolved);
+  const lastNoteAt = state.notes
+    .map((item) => item.at)
+    .filter(Boolean)
+    .sort()
+    .at(-1) || null;
+  return {
+    openNoteCount: openNotes.length,
+    riskNoteCount: openNotes.filter((item) => item.category === "risk").length,
+    actionNoteCount: openNotes.filter((item) => item.category === "action").length,
+    questionNoteCount: openNotes.filter((item) => item.category === "question").length,
+    lastNoteAt
   };
 }
 
@@ -766,6 +803,10 @@ function buildCollections(configs, artifacts) {
     const checkpointCount = collectionArtifacts.reduce((sum, item) => sum + item.checkpointCount, 0);
     const doneCheckpointCount = collectionArtifacts.reduce((sum, item) => sum + item.doneCheckpointCount, 0);
     const noteCount = collectionArtifacts.reduce((sum, item) => sum + item.noteCount, 0);
+    const openNoteCount = collectionArtifacts.reduce((sum, item) => sum + item.openNoteCount, 0);
+    const riskNoteCount = collectionArtifacts.reduce((sum, item) => sum + item.riskNoteCount, 0);
+    const actionNoteCount = collectionArtifacts.reduce((sum, item) => sum + item.actionNoteCount, 0);
+    const reviewArtifactCount = collectionArtifacts.filter((item) => item.needsReview).length;
     const updatedAt = collection.updatedAt
       || collectionArtifacts.map((item) => item.updatedAt).filter(Boolean).sort().at(-1)
       || null;
@@ -781,6 +822,10 @@ function buildCollections(configs, artifacts) {
       doneCheckpointCount,
       progressPercent: checkpointCount ? Math.round((doneCheckpointCount / checkpointCount) * 100) : null,
       noteCount,
+      openNoteCount,
+      riskNoteCount,
+      actionNoteCount,
+      reviewArtifactCount,
       artifacts: collectionArtifacts
     };
   }).filter((collection) => collection.artifactCount > 0)
@@ -810,6 +855,9 @@ function collectionMarkdown(collection) {
     lines.push(`- 状态：${artifact.statusLabel}`);
     lines.push(`- 阶段进度：${progress}`);
     lines.push(`- 评论数量：${artifact.noteCount}`);
+    if (artifact.openNoteCount || artifact.riskNoteCount || artifact.actionNoteCount) {
+      lines.push(`- 待处理 Review：${artifact.openNoteCount} 条未解决，${artifact.riskNoteCount} 个风险，${artifact.actionNoteCount} 个待办`);
+    }
     lines.push("");
   }
 
@@ -975,13 +1023,21 @@ function mapFacets(map) {
 function buildStats(artifacts) {
   const totalCheckpoints = artifacts.reduce((sum, item) => sum + item.checkpointCount, 0);
   const doneCheckpoints = artifacts.reduce((sum, item) => sum + item.doneCheckpointCount, 0);
+  const recentSince = Date.now() - 7 * 24 * 60 * 60 * 1000;
   return {
     total: artifacts.length,
     inProgress: artifacts.filter((item) => item.status === "in-progress").length,
     done: artifacts.filter((item) => item.status === "done").length,
     blocked: artifacts.filter((item) => item.status === "blocked").length,
     totalCheckpoints,
-    doneCheckpoints
+    doneCheckpoints,
+    openNotes: artifacts.reduce((sum, item) => sum + item.openNoteCount, 0),
+    riskNotes: artifacts.reduce((sum, item) => sum + item.riskNoteCount, 0),
+    actionNotes: artifacts.reduce((sum, item) => sum + item.actionNoteCount, 0),
+    reviewArtifacts: artifacts.filter((item) => item.needsReview).length,
+    blockedOrRisk: artifacts.filter((item) => item.blockedOrRisk).length,
+    recentUpdated: artifacts.filter((item) => Date.parse(item.updatedAt || item.lastNoteAt || "") >= recentSince
+      || Date.parse(item.lastNoteAt || "") >= recentSince).length
   };
 }
 
@@ -993,6 +1049,7 @@ function getSearchFilters(query) {
     tag: query.tag,
     collection: query.collection,
     archived: query.archived,
+    review: query.review,
     sort: query.sort
   };
 }
@@ -1015,6 +1072,8 @@ function dashboardPage(root) {
       </header>
 
       <section id="stats" class="stats" aria-label="统计概览"></section>
+
+      <section id="reviewDashboard" class="review-dashboard" aria-label="Review Dashboard"></section>
 
       <section id="collections" class="collections" aria-label="项目集"></section>
 
@@ -1067,6 +1126,7 @@ function dashboardPage(root) {
     <script>
       const elements = {
         stats: document.querySelector("#stats"),
+        reviewDashboard: document.querySelector("#reviewDashboard"),
         collections: document.querySelector("#collections"),
         list: document.querySelector("#list"),
         query: document.querySelector("#query"),
@@ -1086,7 +1146,9 @@ function dashboardPage(root) {
       let collectionResult = [];
       let debounceTimer = null;
       const authToken = new URLSearchParams(location.search).get("token") || "";
-      let activeCollection = new URLSearchParams(location.search).get("collection") || "";
+      const initialParams = new URLSearchParams(location.search);
+      let activeCollection = initialParams.get("collection") || "";
+      let activeReviewFilter = initialParams.get("review") || "";
       document.querySelector("#exportAll").href = withAuthPath("/api/export");
 
       function escapeHtml(value) {
@@ -1161,6 +1223,39 @@ function dashboardPage(root) {
         \`).join("");
       }
 
+      function renderReviewDashboard(stats) {
+        const filters = [
+          ["open", "未解决评论", stats.openNotes],
+          ["risk", "风险", stats.riskNotes],
+          ["action", "待办", stats.actionNotes],
+          ["blocked", "阻塞/风险项", stats.blockedOrRisk],
+          ["recent", "最近 7 天更新", stats.recentUpdated]
+        ];
+        elements.reviewDashboard.innerHTML = \`
+          <div class="section-head">
+            <div>
+              <h2>Review Dashboard</h2>
+              <p>优先处理未解决评论、风险、待办和阻塞项。</p>
+            </div>
+            \${activeReviewFilter ? '<button id="clearReviewFilter" type="button">清除 Review 筛选</button>' : ""}
+          </div>
+          <div class="review-cards">
+            <article class="review-card">
+              <span>待 Review Artifact</span>
+              <strong>\${escapeHtml(stats.reviewArtifacts)}</strong>
+              <small>\${escapeHtml(stats.openNotes)} 条未解决评论</small>
+            </article>
+            \${filters.map(([value, label, count]) => \`
+              <button class="review-card \${activeReviewFilter === value ? "active" : ""}" type="button" data-review-filter="\${escapeHtml(value)}">
+                <span>\${escapeHtml(label)}</span>
+                <strong>\${escapeHtml(count)}</strong>
+                <small>\${activeReviewFilter === value ? "当前筛选" : "点击筛选"}</small>
+              </button>
+            \`).join("")}
+          </div>
+        \`;
+      }
+
       function renderCollections(collections) {
         collectionResult = collections || [];
         if (!collectionResult.length) {
@@ -1192,6 +1287,11 @@ function dashboardPage(root) {
               <a href="\${href}">\${escapeHtml(collection.title)}</a>
               <p>\${escapeHtml(collection.description || progress)}</p>
               <small>\${collection.artifactCount} 个 artifact · \${escapeHtml(progress)} · \${collection.noteCount} 条评论</small>
+              <div class="review-mini">
+                <span>未解决 \${escapeHtml(collection.openNoteCount || 0)}</span>
+                <span>风险 \${escapeHtml(collection.riskNoteCount || 0)}</span>
+                <span>待办 \${escapeHtml(collection.actionNoteCount || 0)}</span>
+              </div>
             </div>
             <button type="button" data-collection-id="\${escapeHtml(collection.id)}">复制摘要</button>
           </article>
@@ -1227,6 +1327,16 @@ function dashboardPage(root) {
           const collection = collectionResult.find((item) => item.id === activeCollection);
           chips.push("项目集：" + (collection?.title || activeCollection));
         }
+        if (activeReviewFilter) {
+          const labels = {
+            open: "Review：未解决评论",
+            risk: "Review：风险",
+            action: "Review：待办",
+            blocked: "Review：阻塞/风险项",
+            recent: "Review：最近更新"
+          };
+          chips.push(labels[activeReviewFilter] || ("Review：" + activeReviewFilter));
+        }
         elements.activeFilters.innerHTML = chips.map((chip) => '<span>' + escapeHtml(chip) + '</span>').join("");
       }
 
@@ -1259,12 +1369,19 @@ function dashboardPage(root) {
         const tags = artifact.tags.length
           ? artifact.tags.map((tag) => '<span class="tag">' + highlight(tag) + '</span>').join("")
           : '<span class="tag muted">无标签</span>';
+        const reviewTags = [
+          artifact.openNoteCount ? "未解决 " + artifact.openNoteCount : "",
+          artifact.riskNoteCount ? "风险 " + artifact.riskNoteCount : "",
+          artifact.actionNoteCount ? "待办 " + artifact.actionNoteCount : "",
+          artifact.lastNoteAt ? "最后评论 " + formatDate(artifact.lastNoteAt) : ""
+        ].filter(Boolean);
         return \`
           <article class="artifact-card">
             <div class="card-main">
               <a class="artifact-title" href="\${withAuthPath("/artifacts/" + encodeURIComponent(artifact.id))}">\${highlight(artifact.title)}</a>
               <p>\${escapeHtml(artifact.typeLabel)} · \${escapeHtml(progress)} · 更新于 \${escapeHtml(formatDate(artifact.updatedAt))}</p>
               <div class="tags">\${tags}</div>
+              \${reviewTags.length ? '<div class="review-mini">' + reviewTags.map((tag) => '<span>' + escapeHtml(tag) + '</span>').join("") + '</div>' : ""}
             </div>
             <div class="card-side">
               <span class="status" data-status="\${escapeHtml(artifact.status)}">\${escapeHtml(artifact.statusLabel)}</span>
@@ -1290,6 +1407,9 @@ function dashboardPage(root) {
         if (activeCollection) {
           params.set("collection", activeCollection);
         }
+        if (activeReviewFilter) {
+          params.set("review", activeReviewFilter);
+        }
         return params;
       }
 
@@ -1303,6 +1423,7 @@ function dashboardPage(root) {
         searchResult = await response.json();
         renderCollections(collectionResult);
         renderStats(searchResult.stats);
+        renderReviewDashboard(searchResult.stats);
         if (!preserveFacets) {
           renderFacets(searchResult.facets);
         }
@@ -1367,6 +1488,22 @@ function dashboardPage(root) {
       });
       elements.importFile.addEventListener("change", () => {
         importBundleFile(elements.importFile.files?.[0]).catch(renderError);
+      });
+      elements.reviewDashboard.addEventListener("click", (event) => {
+        const target = event.target.closest("button");
+        if (!(target instanceof HTMLButtonElement)) {
+          return;
+        }
+        if (target.id === "clearReviewFilter") {
+          activeReviewFilter = "";
+        } else if (target.dataset.reviewFilter) {
+          activeReviewFilter = activeReviewFilter === target.dataset.reviewFilter ? "" : target.dataset.reviewFilter;
+        } else {
+          return;
+        }
+        const nextUrl = currentParams().toString();
+        history.replaceState(null, "", nextUrl ? "/?" + nextUrl : withAuthPath("/"));
+        load({ preserveFacets: true }).catch(renderError);
       });
       elements.collections.addEventListener("click", async (event) => {
         const target = event.target;
@@ -2068,6 +2205,8 @@ function pageShell(title, body) {
     }
     .toolbar {
       display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
       gap: 8px;
     }
     .stats {
@@ -2095,6 +2234,45 @@ function pageShell(title, body) {
     }
     .collections {
       margin-bottom: 14px;
+    }
+    .review-dashboard {
+      margin-bottom: 14px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+      padding: 12px;
+    }
+    .review-cards {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .review-card {
+      display: grid;
+      gap: 5px;
+      min-height: 96px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+      color: var(--text);
+      padding: 12px;
+      text-align: left;
+    }
+    .review-card.active {
+      border-color: var(--accent);
+      background: color-mix(in srgb, var(--accent) 8%, var(--panel));
+    }
+    .review-card span {
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .review-card strong {
+      font-size: 28px;
+      line-height: 1;
+    }
+    .review-card small {
+      color: var(--muted);
+      font-size: 12px;
     }
     .section-head {
       display: flex;
@@ -2250,6 +2428,19 @@ function pageShell(title, body) {
       display: flex;
       flex-wrap: wrap;
       gap: 6px;
+    }
+    .review-mini {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 8px;
+    }
+    .review-mini span {
+      border: 1px solid color-mix(in srgb, var(--warning) 28%, var(--border));
+      border-radius: 999px;
+      color: var(--warning);
+      padding: 2px 8px;
+      font-size: 12px;
     }
     .muted {
       color: var(--muted);
@@ -2481,6 +2672,7 @@ function pageShell(title, body) {
     }
     @media (max-width: 980px) {
       .stats,
+      .review-cards,
       .filters {
         grid-template-columns: repeat(2, minmax(0, 1fr));
       }
@@ -2507,6 +2699,7 @@ function pageShell(title, body) {
         display: block;
       }
       .filters,
+      .review-cards,
       .stats,
       .collection-card {
         grid-template-columns: 1fr;

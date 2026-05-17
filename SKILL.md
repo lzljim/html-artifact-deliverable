@@ -88,6 +88,7 @@ Default behavior:
 - Port: `8787`
 - Detail pages provide status editing, checkpoint toggles, per-checkpoint notes, reviewer comments, resolve/reopen review flow, and JSON/Markdown status export.
 - The dashboard can group related artifacts into collections with aggregate progress and collection-level Markdown export.
+- The dashboard includes a Review Dashboard for unresolved comments, risks, actions, blocked/risk items, and recent updates, with click-to-filter review shortcuts.
 - Archived artifacts use `state.status = "archived"`; they are hidden from default dashboard search but remain available through direct URLs, collections, and explicit archive filters.
 - Single artifacts can be exported as Markdown status reports or JSON migration bundles through the detail page and API.
 - The dashboard provides one-click full export through `GET /api/export` and full import through `POST /api/import`; restore from CLI with `node scripts/import-artifact-bundle.mjs --bundle <file.json>`.

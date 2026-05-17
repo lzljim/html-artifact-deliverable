@@ -294,7 +294,9 @@ POST /api/artifacts/:id/notes/:noteId/resolve
 POST /api/artifacts/:id/notes/:noteId/reopen
 ```
 
-The dashboard groups collection artifacts and shows aggregate progress. The artifact detail page lets reviewers edit status, toggle checkpoints, maintain checkpoint notes, add artifact comments, filter comments by phase, resolve or reopen comments, and copy or download the current state or comment summary as JSON/Markdown.
+The dashboard groups collection artifacts and shows aggregate progress. It also includes a Review Dashboard that summarizes unresolved comments, risks, actions, blocked/risk items, and recently updated artifacts. Review cards act as quick filters through `review=open`, `review=risk`, `review=action`, `review=blocked`, and `review=recent`.
+
+The artifact detail page lets reviewers edit status, toggle checkpoints, maintain checkpoint notes, add artifact comments, filter comments by phase, resolve or reopen comments, and copy or download the current state or comment summary as JSON/Markdown.
 
 Artifact-level export endpoints:
 
