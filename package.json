@@ -1,0 +1,15 @@
+{
+  "name": "html-artifact-deliverable",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node scripts/artifact-server.mjs",
+    "check": "node --check scripts/artifact-server.mjs && node --check scripts/publish-artifact.mjs"
+  },
+  "dependencies": {
+    "@fastify/static": "^9.1.3",
+    "fastify": "^5.8.5",
+    "minisearch": "^7.2.0"
+  }
+}

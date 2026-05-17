@@ -1,13 +1,14 @@
 # Artifact Server Contract
 
-Use this reference when an HTML artifact should be published into a local Node.js service instead of saved as a loose file. The included MVP server lives at `scripts/artifact-server.mjs`; do not start it unless the user asks for sharing, tracking, publishing, or a runnable service.
+Use this reference when an HTML artifact should be published into a local Node.js service instead of saved as a loose file. The included MVP server lives at `scripts/artifact-server.mjs` and uses Fastify, `@fastify/static`, and MiniSearch; do not start it unless the user asks for sharing, tracking, publishing, or a runnable service.
 
 ## Start Command
 
 From the skill directory:
 
 ```bash
-node scripts/artifact-server.mjs
+npm install
+npm start
 ```
 
 With explicit settings:

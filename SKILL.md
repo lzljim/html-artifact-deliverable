@@ -49,10 +49,16 @@ Every HTML artifact must:
 
 ## Artifact Server Script
 
-This skill includes a zero-dependency Node.js MVP server:
+This skill includes a Node.js artifact server built with Fastify, `@fastify/static`, and MiniSearch. Install dependencies once after cloning or updating:
 
 ```bash
-node scripts/artifact-server.mjs
+npm install
+```
+
+Start the server:
+
+```bash
+npm start
 ```
 
 Default behavior:

@@ -1,29 +1,15 @@
 #!/usr/bin/env node
-import { createServer } from "node:http";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
+import Fastify from "fastify";
+import fastifyStatic from "@fastify/static";
+import MiniSearch from "minisearch";
 
 const DEFAULT_PORT = 8787;
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_ROOT = path.join(os.homedir(), ".codex", "html-artifacts");
-
-const MIME_TYPES = new Map([
-  [".css", "text/css; charset=utf-8"],
-  [".gif", "image/gif"],
-  [".html", "text/html; charset=utf-8"],
-  [".ico", "image/x-icon"],
-  [".jpeg", "image/jpeg"],
-  [".jpg", "image/jpeg"],
-  [".js", "text/javascript; charset=utf-8"],
-  [".json", "application/json; charset=utf-8"],
-  [".mjs", "text/javascript; charset=utf-8"],
-  [".png", "image/png"],
-  [".svg", "image/svg+xml; charset=utf-8"],
-  [".txt", "text/plain; charset=utf-8"],
-  [".webp", "image/webp"]
-]);
 
 const STATUS_LABELS = {
   draft: "草稿",
@@ -31,6 +17,15 @@ const STATUS_LABELS = {
   blocked: "阻塞",
   done: "已完成",
   archived: "已归档"
+};
+
+const TYPE_LABELS = {
+  "architecture-explainer": "架构说明",
+  "code-review": "代码评审",
+  "custom-editor": "定制编辑器",
+  "html-artifact": "HTML Artifact",
+  "implementation-plan": "实施计划",
+  "research-report": "调研报告"
 };
 
 function parseArgs(argv) {
@@ -73,6 +68,7 @@ Routes:
   GET  /
   GET  /artifacts/:id
   GET  /api/artifacts
+  GET  /api/artifacts/search
   GET  /api/artifacts/:id
   GET  /api/artifacts/:id/state
   PUT  /api/artifacts/:id/state
@@ -84,14 +80,6 @@ function isArtifactId(value) {
   return /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(value);
 }
 
-function safeDecode(value) {
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return "";
-  }
-}
-
 function escapeHtml(value) {
   return String(value ?? "")
     .replace(/&/g, "&amp;")
@@ -101,36 +89,12 @@ function escapeHtml(value) {
     .replace(/'/g, "&#39;");
 }
 
-function send(res, status, body, contentType = "text/plain; charset=utf-8") {
-  const payload = typeof body === "string" || Buffer.isBuffer(body) ? body : JSON.stringify(body);
-  res.writeHead(status, {
-    "Content-Type": contentType,
-    "Cache-Control": "no-store"
-  });
-  res.end(payload);
+function typeLabel(type) {
+  return TYPE_LABELS[type] || type || "未分类";
 }
 
-function sendJson(res, status, body) {
-  send(res, status, JSON.stringify(body, null, 2), "application/json; charset=utf-8");
-}
-
-function sendError(res, status, message) {
-  sendJson(res, status, {
-    error: message
-  });
-}
-
-async function readBody(req) {
-  const chunks = [];
-  for await (const chunk of req) {
-    chunks.push(chunk);
-    const size = chunks.reduce((sum, current) => sum + current.length, 0);
-    if (size > 1024 * 1024) {
-      throw new Error("Request body is too large.");
-    }
-  }
-  const text = Buffer.concat(chunks).toString("utf8");
-  return text ? JSON.parse(text) : {};
+function statusLabel(status) {
+  return STATUS_LABELS[status] || status || "未知";
 }
 
 async function readJson(filePath, fallback) {
@@ -215,10 +179,54 @@ function createStore(root) {
       artifacts.push(normalizeArtifact(metadata, state, entry.name));
     }
 
-    artifacts.sort((left, right) => {
-      return String(right.updatedAt || "").localeCompare(String(left.updatedAt || ""));
-    });
+    artifacts.sort(compareArtifacts("updated-desc"));
     return artifacts;
+  }
+
+  async function searchArtifacts(filters) {
+    const allArtifacts = await listArtifacts();
+    let items = allArtifacts;
+
+    const query = String(filters.query || "").trim();
+    if (query) {
+      const search = new MiniSearch({
+        fields: ["title", "type", "status", "tagsText", "id"],
+        storeFields: ["id"],
+        searchOptions: {
+          boost: {
+            title: 3,
+            tagsText: 2,
+            type: 1.5
+          },
+          fuzzy: 0.2,
+          prefix: true
+        }
+      });
+      search.addAll(allArtifacts.map((artifact) => ({
+        ...artifact,
+        tagsText: artifact.tags.join(" ")
+      })));
+      const matchedIds = new Set(search.search(query).map((result) => result.id));
+      items = items.filter((artifact) => matchedIds.has(artifact.id));
+    }
+
+    if (filters.status) {
+      items = items.filter((artifact) => artifact.status === filters.status);
+    }
+    if (filters.type) {
+      items = items.filter((artifact) => artifact.type === filters.type);
+    }
+    if (filters.tag) {
+      items = items.filter((artifact) => artifact.tags.includes(filters.tag));
+    }
+
+    items = items.slice().sort(compareArtifacts(filters.sort || "updated-desc"));
+    return {
+      items,
+      facets: buildFacets(allArtifacts),
+      stats: buildStats(allArtifacts),
+      filteredCount: items.length
+    };
   }
 
   async function getArtifact(id) {
@@ -255,7 +263,9 @@ function createStore(root) {
     const state = await getState(id);
     const checkpoint = state.checkpoints.find((item) => item.id === checkpointId);
     if (!checkpoint) {
-      throw new Error(`Checkpoint not found: ${checkpointId}`);
+      const error = new Error(`Checkpoint not found: ${checkpointId}`);
+      error.statusCode = 404;
+      throw error;
     }
 
     checkpoint.done = !checkpoint.done;
@@ -272,9 +282,11 @@ function createStore(root) {
 
   async function addNote(id, note) {
     const state = await getState(id);
-    const text = String(note.text ?? "").trim();
+    const text = String(note?.text ?? "").trim();
     if (!text) {
-      throw new Error("Note text is required.");
+      const error = new Error("Note text is required.");
+      error.statusCode = 400;
+      throw error;
     }
 
     const item = {
@@ -293,39 +305,21 @@ function createStore(root) {
     return state;
   }
 
-  async function readStaticFile(id, relativePath) {
-    const dir = artifactDir(id);
-    const safeRelativePath = relativePath || "index.html";
-    const targetPath = path.resolve(dir, safeRelativePath);
-    const relativeToDir = path.relative(dir, targetPath);
-    if (relativeToDir.startsWith("..") || path.isAbsolute(relativeToDir)) {
-      return null;
-    }
-
-    try {
-      const stat = await fs.stat(targetPath);
-      if (!stat.isFile()) {
-        return null;
-      }
-      return {
-        buffer: await fs.readFile(targetPath),
-        contentType: MIME_TYPES.get(path.extname(targetPath).toLowerCase()) || "application/octet-stream"
-      };
-    } catch {
-      return null;
-    }
+  function getArtifactFileRoot(id) {
+    return artifactDir(id);
   }
 
   return {
     root: absoluteRoot,
     ensureRoot,
     listArtifacts,
+    searchArtifacts,
     getArtifact,
     getState,
     putState,
     toggleCheckpoint,
     addNote,
-    readStaticFile
+    getArtifactFileRoot
   };
 }
 
@@ -339,18 +333,24 @@ function defaultState() {
 }
 
 function normalizeArtifact(metadata, state, fallbackId) {
+  const checkpointCount = state.checkpoints.length;
+  const doneCheckpointCount = state.checkpoints.filter((item) => item.done).length;
   return {
     id: String(metadata.id || fallbackId),
     title: String(metadata.title || metadata.id || fallbackId),
     type: String(metadata.type || "html-artifact"),
+    typeLabel: typeLabel(metadata.type || "html-artifact"),
     createdAt: metadata.createdAt || null,
     updatedAt: metadata.updatedAt || metadata.createdAt || null,
     source: metadata.source || {},
     entry: metadata.entry || "index.html",
-    tags: Array.isArray(metadata.tags) ? metadata.tags : [],
+    tags: Array.isArray(metadata.tags) ? metadata.tags.map(String) : [],
     status: state.status || "in-progress",
-    checkpointCount: state.checkpoints.length,
-    doneCheckpointCount: state.checkpoints.filter((item) => item.done).length
+    statusLabel: statusLabel(state.status || "in-progress"),
+    checkpointCount,
+    doneCheckpointCount,
+    progressPercent: checkpointCount ? Math.round((doneCheckpointCount / checkpointCount) * 100) : null,
+    noteCount: state.notes.length
   };
 }
 
@@ -377,35 +377,154 @@ function normalizeState(state) {
   };
 }
 
+function compareArtifacts(sort) {
+  return (left, right) => {
+    if (sort === "title") {
+      return left.title.localeCompare(right.title, "zh-CN");
+    }
+    if (sort === "progress") {
+      return (right.progressPercent ?? -1) - (left.progressPercent ?? -1)
+        || String(right.updatedAt || "").localeCompare(String(left.updatedAt || ""));
+    }
+    if (sort === "created-desc") {
+      return String(right.createdAt || "").localeCompare(String(left.createdAt || ""));
+    }
+    return String(right.updatedAt || "").localeCompare(String(left.updatedAt || ""));
+  };
+}
+
+function buildFacets(artifacts) {
+  const statuses = new Map();
+  const types = new Map();
+  const tags = new Map();
+
+  for (const artifact of artifacts) {
+    incrementFacet(statuses, artifact.status, artifact.statusLabel);
+    incrementFacet(types, artifact.type, artifact.typeLabel);
+    for (const tag of artifact.tags) {
+      incrementFacet(tags, tag, tag);
+    }
+  }
+
+  return {
+    statuses: mapFacets(statuses),
+    types: mapFacets(types),
+    tags: mapFacets(tags)
+  };
+}
+
+function incrementFacet(map, value, label) {
+  if (!value) {
+    return;
+  }
+  const item = map.get(value) || {
+    value,
+    label,
+    count: 0
+  };
+  item.count += 1;
+  map.set(value, item);
+}
+
+function mapFacets(map) {
+  return [...map.values()].sort((left, right) => {
+    return right.count - left.count || left.label.localeCompare(right.label, "zh-CN");
+  });
+}
+
+function buildStats(artifacts) {
+  const totalCheckpoints = artifacts.reduce((sum, item) => sum + item.checkpointCount, 0);
+  const doneCheckpoints = artifacts.reduce((sum, item) => sum + item.doneCheckpointCount, 0);
+  return {
+    total: artifacts.length,
+    inProgress: artifacts.filter((item) => item.status === "in-progress").length,
+    done: artifacts.filter((item) => item.status === "done").length,
+    blocked: artifacts.filter((item) => item.status === "blocked").length,
+    totalCheckpoints,
+    doneCheckpoints
+  };
+}
+
+function getSearchFilters(query) {
+  return {
+    query: query.q,
+    status: query.status,
+    type: query.type,
+    tag: query.tag,
+    sort: query.sort
+  };
+}
+
 function dashboardPage(root) {
   return pageShell("Artifact 工作台", `
     <main class="dashboard">
       <header class="topbar">
         <div>
+          <p class="eyebrow">HTML Artifact Workbench</p>
           <h1>Artifact 工作台</h1>
           <p>发布目录：<code>${escapeHtml(root)}</code></p>
         </div>
-        <button id="refresh" type="button">刷新</button>
+        <div class="toolbar">
+          <button id="refresh" type="button">刷新</button>
+        </div>
       </header>
-      <section class="filters">
-        <input id="query" type="search" placeholder="搜索标题、类型、标签">
-        <select id="status">
-          <option value="">全部状态</option>
-          <option value="draft">草稿</option>
-          <option value="in-progress">进行中</option>
-          <option value="blocked">阻塞</option>
-          <option value="done">已完成</option>
-          <option value="archived">已归档</option>
-        </select>
+
+      <section id="stats" class="stats" aria-label="统计概览"></section>
+
+      <section class="filters" aria-label="筛选条件">
+        <label>
+          <span>搜索</span>
+          <input id="query" type="search" placeholder="搜索标题、类型、标签、ID">
+        </label>
+        <label>
+          <span>状态</span>
+          <select id="status"></select>
+        </label>
+        <label>
+          <span>类型</span>
+          <select id="type"></select>
+        </label>
+        <label>
+          <span>标签</span>
+          <select id="tag"></select>
+        </label>
+        <label>
+          <span>排序</span>
+          <select id="sort">
+            <option value="updated-desc">最近更新</option>
+            <option value="created-desc">最近创建</option>
+            <option value="progress">进度优先</option>
+            <option value="title">标题</option>
+          </select>
+        </label>
       </section>
-      <section id="list" class="artifact-list" aria-live="polite"></section>
+
+      <section class="result-head">
+        <div>
+          <h2>交付物</h2>
+          <p id="resultSummary">加载中...</p>
+        </div>
+        <div id="activeFilters" class="active-filters"></div>
+      </section>
+
+      <section id="list" class="artifact-groups" aria-live="polite"></section>
     </main>
     <script>
-      const list = document.querySelector("#list");
-      const query = document.querySelector("#query");
-      const status = document.querySelector("#status");
-      const refresh = document.querySelector("#refresh");
-      let artifacts = [];
+      const elements = {
+        stats: document.querySelector("#stats"),
+        list: document.querySelector("#list"),
+        query: document.querySelector("#query"),
+        status: document.querySelector("#status"),
+        type: document.querySelector("#type"),
+        tag: document.querySelector("#tag"),
+        sort: document.querySelector("#sort"),
+        refresh: document.querySelector("#refresh"),
+        resultSummary: document.querySelector("#resultSummary"),
+        activeFilters: document.querySelector("#activeFilters")
+      };
+
+      let searchResult = null;
+      let debounceTimer = null;
 
       function escapeHtml(value) {
         return String(value ?? "")
@@ -418,53 +537,173 @@ function dashboardPage(root) {
 
       function formatDate(value) {
         if (!value) {
-          return "";
+          return "无时间";
         }
         return new Date(value).toLocaleString();
       }
 
-      function render() {
-        const text = query.value.trim().toLowerCase();
-        const selectedStatus = status.value;
-        const filtered = artifacts.filter((artifact) => {
-          const haystack = [artifact.title, artifact.type, artifact.status, ...(artifact.tags || [])].join(" ").toLowerCase();
-          return (!text || haystack.includes(text)) && (!selectedStatus || artifact.status === selectedStatus);
-        });
+      function highlight(value) {
+        const text = escapeHtml(value);
+        const query = elements.query.value.trim();
+        if (!query) {
+          return text;
+        }
+        const words = query.split(/\\s+/).filter(Boolean).map(escapeRegExp);
+        if (!words.length) {
+          return text;
+        }
+        return text.replace(new RegExp("(" + words.join("|") + ")", "gi"), "<mark>$1</mark>");
+      }
 
-        if (!filtered.length) {
-          list.innerHTML = '<div class="empty">暂无匹配 artifact。把包含 index.html 的目录放进发布目录即可显示。</div>';
+      function escapeRegExp(value) {
+        return String(value).replace(/[|\\\\{}()[\\]^$+*?.]/g, "\\\\$&");
+      }
+
+      function setOptions(select, items, emptyLabel) {
+        const selected = select.value;
+        select.innerHTML = '<option value="">' + emptyLabel + '</option>'
+          + items.map((item) => '<option value="' + escapeHtml(item.value) + '">' + escapeHtml(item.label) + ' (' + item.count + ')</option>').join("");
+        select.value = [...select.options].some((option) => option.value === selected) ? selected : "";
+      }
+
+      function renderFacets(facets) {
+        setOptions(elements.status, facets.statuses || [], "全部状态");
+        setOptions(elements.type, facets.types || [], "全部类型");
+        setOptions(elements.tag, facets.tags || [], "全部标签");
+      }
+
+      function renderStats(stats) {
+        const checkpointText = stats.totalCheckpoints
+          ? stats.doneCheckpoints + "/" + stats.totalCheckpoints
+          : "0/0";
+        elements.stats.innerHTML = [
+          ["总数", stats.total],
+          ["进行中", stats.inProgress],
+          ["阻塞", stats.blocked],
+          ["已完成", stats.done],
+          ["阶段进度", checkpointText]
+        ].map(([label, value]) => \`
+          <article class="stat-card">
+            <span>\${escapeHtml(label)}</span>
+            <strong>\${escapeHtml(value)}</strong>
+          </article>
+        \`).join("");
+      }
+
+      function groupByStatus(items) {
+        const grouped = new Map();
+        for (const item of items) {
+          const key = item.status || "unknown";
+          if (!grouped.has(key)) {
+            grouped.set(key, {
+              label: item.statusLabel || key,
+              items: []
+            });
+          }
+          grouped.get(key).items.push(item);
+        }
+        return [...grouped.entries()];
+      }
+
+      function renderActiveFilters() {
+        const chips = [];
+        if (elements.query.value.trim()) {
+          chips.push("搜索：" + elements.query.value.trim());
+        }
+        for (const element of [elements.status, elements.type, elements.tag]) {
+          if (element.value) {
+            chips.push(element.selectedOptions[0].textContent);
+          }
+        }
+        elements.activeFilters.innerHTML = chips.map((chip) => '<span>' + escapeHtml(chip) + '</span>').join("");
+      }
+
+      function renderList(items) {
+        elements.resultSummary.textContent = "显示 " + items.length + " / " + searchResult.stats.total + " 个 artifact";
+        renderActiveFilters();
+
+        if (!items.length) {
+          elements.list.innerHTML = '<div class="empty">没有匹配的 artifact。调整搜索词或筛选条件试试。</div>';
           return;
         }
 
-        list.innerHTML = filtered.map((artifact) => {
-          const progress = artifact.checkpointCount
-            ? \`\${artifact.doneCheckpointCount}/\${artifact.checkpointCount} 阶段完成\`
-            : "无阶段";
-          return \`
-            <article class="artifact-card">
-              <div>
-                <a class="artifact-title" href="/artifacts/\${encodeURIComponent(artifact.id)}">\${escapeHtml(artifact.title)}</a>
-                <p>\${escapeHtml(artifact.type)} · \${escapeHtml(progress)} · 更新于 \${escapeHtml(formatDate(artifact.updatedAt))}</p>
-              </div>
-              <span class="status" data-status="\${escapeHtml(artifact.status)}">\${escapeHtml(artifact.status)}</span>
-            </article>
-          \`;
-        }).join("");
+        elements.list.innerHTML = groupByStatus(items).map(([status, group]) => \`
+          <section class="artifact-group">
+            <header>
+              <h3>\${escapeHtml(group.label)}</h3>
+              <span>\${group.items.length}</span>
+            </header>
+            <div class="artifact-list">
+              \${group.items.map(renderCard).join("")}
+            </div>
+          </section>
+        \`).join("");
       }
 
-      async function load() {
-        list.innerHTML = '<div class="empty">加载中...</div>';
-        const response = await fetch("/api/artifacts");
-        artifacts = await response.json();
-        render();
+      function renderCard(artifact) {
+        const progress = artifact.checkpointCount
+          ? artifact.doneCheckpointCount + "/" + artifact.checkpointCount + " 阶段 · " + artifact.progressPercent + "%"
+          : "无阶段";
+        const tags = artifact.tags.length
+          ? artifact.tags.map((tag) => '<span class="tag">' + highlight(tag) + '</span>').join("")
+          : '<span class="tag muted">无标签</span>';
+        return \`
+          <article class="artifact-card">
+            <div class="card-main">
+              <a class="artifact-title" href="/artifacts/\${encodeURIComponent(artifact.id)}">\${highlight(artifact.title)}</a>
+              <p>\${escapeHtml(artifact.typeLabel)} · \${escapeHtml(progress)} · 更新于 \${escapeHtml(formatDate(artifact.updatedAt))}</p>
+              <div class="tags">\${tags}</div>
+            </div>
+            <div class="card-side">
+              <span class="status" data-status="\${escapeHtml(artifact.status)}">\${escapeHtml(artifact.statusLabel)}</span>
+              <small>\${escapeHtml(artifact.id)}</small>
+            </div>
+          </article>
+        \`;
       }
 
-      query.addEventListener("input", render);
-      status.addEventListener("change", render);
-      refresh.addEventListener("click", load);
-      load().catch((error) => {
-        list.innerHTML = '<div class="empty">加载失败：' + escapeHtml(error.message) + '</div>';
-      });
+      function currentParams() {
+        const params = new URLSearchParams();
+        if (elements.query.value.trim()) {
+          params.set("q", elements.query.value.trim());
+        }
+        for (const [key, element] of [["status", elements.status], ["type", elements.type], ["tag", elements.tag], ["sort", elements.sort]]) {
+          if (element.value) {
+            params.set(key, element.value);
+          }
+        }
+        return params;
+      }
+
+      async function load({ preserveFacets = false } = {}) {
+        elements.resultSummary.textContent = "加载中...";
+        const response = await fetch("/api/artifacts/search?" + currentParams().toString());
+        searchResult = await response.json();
+        renderStats(searchResult.stats);
+        if (!preserveFacets) {
+          renderFacets(searchResult.facets);
+        }
+        renderList(searchResult.items);
+      }
+
+      function scheduleLoad() {
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => {
+          load({ preserveFacets: true }).catch(renderError);
+        }, 160);
+      }
+
+      function renderError(error) {
+        elements.resultSummary.textContent = "加载失败";
+        elements.list.innerHTML = '<div class="empty">加载失败：' + escapeHtml(error.message) + '</div>';
+      }
+
+      elements.query.addEventListener("input", scheduleLoad);
+      for (const element of [elements.status, elements.type, elements.tag, elements.sort]) {
+        element.addEventListener("change", () => load({ preserveFacets: true }).catch(renderError));
+      }
+      elements.refresh.addEventListener("click", () => load().catch(renderError));
+      load().catch(renderError);
     </script>
   `);
 }
@@ -476,14 +715,17 @@ function artifactPage(artifact) {
       <section class="artifact-frame">
         <header>
           <a href="/" class="back">返回列表</a>
-          <h1>${title}</h1>
+          <div>
+            <h1>${title}</h1>
+            <p>${escapeHtml(artifact.typeLabel)} · ${escapeHtml(artifact.statusLabel)}</p>
+          </div>
         </header>
         <iframe title="${title}" src="/files/${encodeURIComponent(artifact.id)}/${encodeURIComponent(artifact.entry)}"></iframe>
       </section>
       <aside class="state-panel">
         <div class="panel-header">
           <h2>执行状态</h2>
-          <span id="statusLabel" class="status">${escapeHtml(STATUS_LABELS[artifact.status] || artifact.status)}</span>
+          <span id="statusLabel" class="status">${escapeHtml(artifact.statusLabel)}</span>
         </div>
         <section>
           <h3>阶段</h3>
@@ -511,6 +753,7 @@ function artifactPage(artifact) {
       const noteForm = document.querySelector("#noteForm");
       const noteText = document.querySelector("#noteText");
       const copyState = document.querySelector("#copyState");
+      const statusLabels = ${JSON.stringify(STATUS_LABELS)};
       let state = null;
 
       function escapeHtml(value) {
@@ -527,7 +770,7 @@ function artifactPage(artifact) {
       }
 
       function renderState() {
-        statusLabel.textContent = state.status || "in-progress";
+        statusLabel.textContent = statusLabels[state.status] || state.status || "in-progress";
         if (!state.checkpoints.length) {
           checkpoints.innerHTML = '<div class="empty compact">没有阶段。可在 state.json 中添加 checkpoints。</div>';
         } else {
@@ -618,12 +861,14 @@ function pageShell(title, body) {
       color-scheme: light dark;
       --bg: #f6f7f9;
       --panel: #ffffff;
+      --panel-soft: #eef3f7;
       --text: #1f2933;
       --muted: #667085;
       --border: #d7dde5;
       --accent: #2563eb;
       --done: #0f766e;
       --blocked: #b42318;
+      --warning: #a16207;
       font-family: Inter, "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
     }
     * {
@@ -648,15 +893,25 @@ function pageShell(title, body) {
       cursor: pointer;
       padding: 8px 12px;
     }
-    button:hover {
+    button:hover,
+    input:focus,
+    select:focus,
+    textarea:focus {
       border-color: var(--accent);
+      outline: none;
     }
     code {
       font-family: "Cascadia Code", Consolas, monospace;
       font-size: 0.92em;
     }
+    mark {
+      border-radius: 3px;
+      background: #fff2a8;
+      color: #111827;
+      padding: 0 2px;
+    }
     .dashboard {
-      width: min(1120px, calc(100vw - 32px));
+      width: min(1240px, calc(100vw - 32px));
       margin: 0 auto;
       padding: 28px 0 48px;
     }
@@ -665,7 +920,13 @@ function pageShell(title, body) {
       align-items: flex-start;
       justify-content: space-between;
       gap: 16px;
-      margin-bottom: 20px;
+      margin-bottom: 18px;
+    }
+    .eyebrow {
+      margin: 0 0 4px;
+      color: var(--accent);
+      font-weight: 700;
+      font-size: 13px;
     }
     h1,
     h2,
@@ -678,39 +939,134 @@ function pageShell(title, body) {
       font-size: 28px;
       letter-spacing: 0;
     }
+    h2 {
+      margin-bottom: 4px;
+      font-size: 20px;
+      letter-spacing: 0;
+    }
+    h3 {
+      letter-spacing: 0;
+    }
     p {
       color: var(--muted);
       line-height: 1.6;
     }
-    .filters {
+    .toolbar {
+      display: flex;
+      gap: 8px;
+    }
+    .stats {
       display: grid;
-      grid-template-columns: 1fr 160px;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
       gap: 10px;
       margin-bottom: 14px;
+    }
+    .stat-card {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+      padding: 12px 14px;
+    }
+    .stat-card span {
+      display: block;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .stat-card strong {
+      display: block;
+      margin-top: 5px;
+      font-size: 24px;
+      line-height: 1.1;
+    }
+    .filters {
+      display: grid;
+      grid-template-columns: minmax(240px, 1.4fr) repeat(4, minmax(130px, 0.8fr));
+      gap: 10px;
+      margin-bottom: 14px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+      padding: 12px;
+    }
+    .filters label {
+      display: grid;
+      gap: 5px;
+      color: var(--muted);
+      font-size: 12px;
     }
     .filters input,
     .filters select,
     textarea {
       width: 100%;
+      min-height: 38px;
       border: 1px solid var(--border);
       border-radius: 6px;
       background: var(--panel);
       color: var(--text);
-      padding: 10px 12px;
+      padding: 8px 10px;
     }
-    .artifact-list {
-      display: grid;
-      gap: 10px;
-    }
-    .artifact-card {
+    .result-head {
       display: flex;
-      align-items: center;
+      align-items: flex-start;
       justify-content: space-between;
-      gap: 16px;
+      gap: 12px;
+      margin: 16px 0 10px;
+    }
+    .result-head p {
+      margin-bottom: 0;
+    }
+    .active-filters {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 6px;
+    }
+    .active-filters span,
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      color: var(--muted);
+      padding: 2px 8px;
+      font-size: 12px;
+    }
+    .artifact-groups {
+      display: grid;
+      gap: 12px;
+    }
+    .artifact-group {
       border: 1px solid var(--border);
       border-radius: 8px;
       background: var(--panel);
+      overflow: hidden;
+    }
+    .artifact-group > header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      background: var(--panel-soft);
+      border-bottom: 1px solid var(--border);
+      padding: 10px 14px;
+    }
+    .artifact-group h3 {
+      margin: 0;
+      font-size: 15px;
+    }
+    .artifact-list {
+      display: grid;
+    }
+    .artifact-card {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 16px;
+      align-items: center;
       padding: 14px 16px;
+    }
+    .artifact-card + .artifact-card {
+      border-top: 1px solid var(--border);
     }
     .artifact-title {
       color: var(--text);
@@ -721,8 +1077,25 @@ function pageShell(title, body) {
       color: var(--accent);
     }
     .artifact-card p {
-      margin: 4px 0 0;
+      margin: 4px 0 8px;
       font-size: 14px;
+    }
+    .tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .muted {
+      color: var(--muted);
+    }
+    .card-side {
+      display: grid;
+      justify-items: end;
+      gap: 6px;
+    }
+    .card-side small {
+      color: var(--muted);
+      font-size: 12px;
     }
     .status {
       display: inline-flex;
@@ -776,7 +1149,7 @@ function pageShell(title, body) {
     }
     iframe {
       width: 100%;
-      height: calc(100vh - 88px);
+      height: calc(100vh - 96px);
       border: 1px solid var(--border);
       border-radius: 8px;
       background: #ffffff;
@@ -841,7 +1214,11 @@ function pageShell(title, body) {
       display: grid;
       gap: 8px;
     }
-    @media (max-width: 900px) {
+    @media (max-width: 980px) {
+      .stats,
+      .filters {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
       .artifact-view {
         grid-template-columns: 1fr;
       }
@@ -856,21 +1233,32 @@ function pageShell(title, body) {
     }
     @media (max-width: 640px) {
       .topbar,
+      .result-head,
       .artifact-card,
       .artifact-frame header {
         display: block;
       }
-      .filters {
+      .filters,
+      .stats {
         grid-template-columns: 1fr;
       }
       .dashboard {
-        width: min(100vw - 20px, 1120px);
+        width: min(100vw - 20px, 1240px);
+      }
+      .card-side {
+        justify-items: start;
+        margin-top: 10px;
+      }
+      .active-filters {
+        justify-content: flex-start;
+        margin-top: 8px;
       }
     }
     @media (prefers-color-scheme: dark) {
       :root {
         --bg: #111827;
         --panel: #172033;
+        --panel-soft: #1f2a3d;
         --text: #f3f4f6;
         --muted: #a8b3c7;
         --border: #314058;
@@ -885,105 +1273,111 @@ ${body}
 </html>`;
 }
 
-function routeMatch(pathname, pattern) {
-  const pathParts = pathname.split("/").filter(Boolean);
-  const patternParts = pattern.split("/").filter(Boolean);
-  if (pathParts.length !== patternParts.length) {
-    return null;
-  }
+async function createApp(store) {
+  const app = Fastify({
+    bodyLimit: 1024 * 1024,
+    logger: false
+  });
+  app.addContentTypeParser("application/x-www-form-urlencoded", {
+    parseAs: "string"
+  }, (request, body, done) => {
+    done(null, body ? Object.fromEntries(new URLSearchParams(body)) : {});
+  });
 
-  const params = {};
-  for (let index = 0; index < patternParts.length; index += 1) {
-    const patternPart = patternParts[index];
-    const pathPart = safeDecode(pathParts[index]);
-    if (patternPart.startsWith(":")) {
-      params[patternPart.slice(1)] = pathPart;
-    } else if (patternPart !== pathPart) {
-      return null;
+  await app.register(fastifyStatic, {
+    root: store.root,
+    serve: false
+  });
+
+  app.setErrorHandler((error, request, reply) => {
+    const statusCode = error.statusCode || 500;
+    reply.code(statusCode).send({
+      error: error.message || "Internal server error"
+    });
+  });
+
+  app.get("/", async (request, reply) => {
+    return reply.type("text/html; charset=utf-8").send(dashboardPage(store.root));
+  });
+
+  app.get("/artifacts/:id", async (request, reply) => {
+    const artifact = await store.getArtifact(request.params.id);
+    if (!artifact) {
+      return reply.code(404).send({
+        error: "Artifact not found."
+      });
     }
-  }
-  return params;
-}
+    return reply.type("text/html; charset=utf-8").send(artifactPage(artifact));
+  });
 
-async function handleRequest(store, req, res) {
-  const url = new URL(req.url, "http://localhost");
-  const pathname = url.pathname;
+  app.get("/api/artifacts", async () => {
+    return store.listArtifacts();
+  });
 
-  try {
-    if (req.method === "GET" && pathname === "/") {
-      return send(res, 200, dashboardPage(store.root), "text/html; charset=utf-8");
+  app.get("/api/artifacts/search", async (request) => {
+    return store.searchArtifacts(getSearchFilters(request.query));
+  });
+
+  app.get("/api/artifacts/:id", async (request, reply) => {
+    const artifact = await store.getArtifact(request.params.id);
+    if (!artifact) {
+      return reply.code(404).send({
+        error: "Artifact not found."
+      });
     }
+    return artifact;
+  });
 
-    let params = routeMatch(pathname, "/artifacts/:id");
-    if (req.method === "GET" && params) {
-      const artifact = await store.getArtifact(params.id);
-      if (!artifact) {
-        return sendError(res, 404, "Artifact not found.");
-      }
-      return send(res, 200, artifactPage(artifact), "text/html; charset=utf-8");
+  app.get("/api/artifacts/:id/state", async (request, reply) => {
+    if (!(await store.getArtifact(request.params.id))) {
+      return reply.code(404).send({
+        error: "Artifact not found."
+      });
     }
+    return store.getState(request.params.id);
+  });
 
-    if (req.method === "GET" && pathname === "/api/artifacts") {
-      return sendJson(res, 200, await store.listArtifacts());
+  app.put("/api/artifacts/:id/state", async (request, reply) => {
+    if (!(await store.getArtifact(request.params.id))) {
+      return reply.code(404).send({
+        error: "Artifact not found."
+      });
     }
+    return store.putState(request.params.id, request.body);
+  });
 
-    params = routeMatch(pathname, "/api/artifacts/:id");
-    if (req.method === "GET" && params) {
-      const artifact = await store.getArtifact(params.id);
-      if (!artifact) {
-        return sendError(res, 404, "Artifact not found.");
-      }
-      return sendJson(res, 200, artifact);
+  app.post("/api/artifacts/:id/checkpoints/:checkpointId/toggle", async (request, reply) => {
+    if (!(await store.getArtifact(request.params.id))) {
+      return reply.code(404).send({
+        error: "Artifact not found."
+      });
     }
+    return store.toggleCheckpoint(request.params.id, request.params.checkpointId);
+  });
 
-    params = routeMatch(pathname, "/api/artifacts/:id/state");
-    if (params) {
-      if (!(await store.getArtifact(params.id))) {
-        return sendError(res, 404, "Artifact not found.");
-      }
-      if (req.method === "GET") {
-        return sendJson(res, 200, await store.getState(params.id));
-      }
-      if (req.method === "PUT") {
-        return sendJson(res, 200, await store.putState(params.id, await readBody(req)));
-      }
+  app.post("/api/artifacts/:id/notes", async (request, reply) => {
+    if (!(await store.getArtifact(request.params.id))) {
+      return reply.code(404).send({
+        error: "Artifact not found."
+      });
     }
+    return store.addNote(request.params.id, request.body);
+  });
 
-    params = routeMatch(pathname, "/api/artifacts/:id/checkpoints/:checkpointId/toggle");
-    if (req.method === "POST" && params) {
-      if (!(await store.getArtifact(params.id))) {
-        return sendError(res, 404, "Artifact not found.");
-      }
-      return sendJson(res, 200, await store.toggleCheckpoint(params.id, params.checkpointId));
+  app.get("/files/:id/*", async (request, reply) => {
+    const { id } = request.params;
+    if (!isArtifactId(id) || !(await store.getArtifact(id))) {
+      return reply.code(404).send({
+        error: "Artifact not found."
+      });
     }
+    const relativePath = request.params["*"] || "index.html";
+    return reply.sendFile(relativePath, store.getArtifactFileRoot(id), {
+      cacheControl: false
+    });
+  });
 
-    params = routeMatch(pathname, "/api/artifacts/:id/notes");
-    if (req.method === "POST" && params) {
-      if (!(await store.getArtifact(params.id))) {
-        return sendError(res, 404, "Artifact not found.");
-      }
-      return sendJson(res, 200, await store.addNote(params.id, await readBody(req)));
-    }
-
-    if (req.method === "GET" && pathname.startsWith("/files/")) {
-      const parts = pathname.split("/").filter(Boolean);
-      const id = safeDecode(parts[1] || "");
-      const relativePath = parts.slice(2).map(safeDecode).join("/") || "index.html";
-      if (!isArtifactId(id)) {
-        return sendError(res, 400, "Invalid artifact id.");
-      }
-
-      const file = await store.readStaticFile(id, relativePath);
-      if (!file) {
-        return sendError(res, 404, "File not found.");
-      }
-      return send(res, 200, file.buffer, file.contentType);
-    }
-
-    return sendError(res, 404, "Not found.");
-  } catch (error) {
-    return sendError(res, 500, error.message || "Internal server error.");
-  }
+  return app;
 }
 
 async function main() {
@@ -998,19 +1392,18 @@ async function main() {
 
   const store = createStore(args.root);
   await store.ensureRoot();
-
-  const server = createServer((req, res) => {
-    void handleRequest(store, req, res);
+  const app = await createApp(store);
+  await app.listen({
+    host: args.host,
+    port: args.port
   });
 
-  server.listen(args.port, args.host, () => {
-    const urlHost = args.host === "0.0.0.0" ? "localhost" : args.host;
-    console.log(`Artifact server listening at http://${urlHost}:${args.port}`);
-    console.log(`Artifact root: ${store.root}`);
-    if (args.host === "0.0.0.0") {
-      console.log("LAN sharing is enabled. Review artifact contents before sharing the URL.");
-    }
-  });
+  const urlHost = args.host === "0.0.0.0" ? "localhost" : args.host;
+  console.log(`Artifact server listening at http://${urlHost}:${args.port}`);
+  console.log(`Artifact root: ${store.root}`);
+  if (args.host === "0.0.0.0") {
+    console.log("LAN sharing is enabled. Review artifact contents before sharing the URL.");
+  }
 }
 
 main().catch((error) => {
