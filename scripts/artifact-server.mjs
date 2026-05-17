@@ -32,7 +32,8 @@ function parseArgs(argv) {
   const args = {
     root: process.env.ARTIFACT_ROOT || DEFAULT_ROOT,
     host: process.env.ARTIFACT_HOST || DEFAULT_HOST,
-    port: Number(process.env.ARTIFACT_PORT || DEFAULT_PORT)
+    port: Number(process.env.ARTIFACT_PORT || DEFAULT_PORT),
+    token: process.env.ARTIFACT_TOKEN || ""
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -45,6 +46,8 @@ function parseArgs(argv) {
       args.host = argv[++index];
     } else if (arg === "--port") {
       args.port = Number(argv[++index]);
+    } else if (arg === "--token") {
+      args.token = argv[++index] || "";
     }
   }
 
@@ -53,7 +56,7 @@ function parseArgs(argv) {
 
 function printHelp() {
   const script = path.basename(fileURLToPath(import.meta.url));
-  console.log(`Usage: node ${script} [--root <dir>] [--host <host>] [--port <port>]
+  console.log(`Usage: node ${script} [--root <dir>] [--host <host>] [--port <port>] [--token <token>]
 
 Default root: ${DEFAULT_ROOT}
 Default host: ${DEFAULT_HOST}
@@ -63,6 +66,7 @@ Environment variables:
   ARTIFACT_ROOT
   ARTIFACT_HOST
   ARTIFACT_PORT
+  ARTIFACT_TOKEN
 
 Routes:
   GET  /
@@ -95,6 +99,131 @@ function typeLabel(type) {
 
 function statusLabel(status) {
   return STATUS_LABELS[status] || status || "未知";
+}
+
+function parseCookies(header) {
+  const cookies = new Map();
+  for (const part of String(header || "").split(";")) {
+    const separatorIndex = part.indexOf("=");
+    if (separatorIndex === -1) {
+      continue;
+    }
+    const key = part.slice(0, separatorIndex).trim();
+    const value = part.slice(separatorIndex + 1).trim();
+    if (key) {
+      cookies.set(key, decodeURIComponent(value));
+    }
+  }
+  return cookies;
+}
+
+function authTokenFromRequest(request) {
+  const queryToken = request.query?.token;
+  if (typeof queryToken === "string" && queryToken) {
+    return queryToken;
+  }
+
+  const headerToken = request.headers["x-artifact-token"];
+  if (typeof headerToken === "string" && headerToken) {
+    return headerToken;
+  }
+
+  const authorization = request.headers.authorization || "";
+  const bearerMatch = /^Bearer\s+(.+)$/i.exec(authorization);
+  if (bearerMatch) {
+    return bearerMatch[1];
+  }
+
+  return parseCookies(request.headers.cookie).get("artifact_token") || "";
+}
+
+function isApiRequest(request) {
+  return request.url.startsWith("/api/");
+}
+
+function tokenPromptPage() {
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>需要访问 Token</title>
+  <style>
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background: #f6f7f9;
+      color: #1f2933;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main {
+      width: min(420px, calc(100vw - 32px));
+      border: 1px solid #d7dde5;
+      border-radius: 8px;
+      background: #ffffff;
+      padding: 24px;
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 22px;
+    }
+    p {
+      color: #667085;
+      line-height: 1.6;
+    }
+    form {
+      display: grid;
+      gap: 10px;
+      margin-top: 16px;
+    }
+    input,
+    button {
+      min-height: 40px;
+      border: 1px solid #d7dde5;
+      border-radius: 6px;
+      padding: 8px 10px;
+      font: inherit;
+    }
+    button {
+      background: #2563eb;
+      color: #ffffff;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>需要访问 Token</h1>
+    <p>这个 Artifact 服务启用了局域网访问保护。请输入启动服务时配置的 token。</p>
+    <form method="get">
+      <input name="token" type="password" autocomplete="current-password" autofocus>
+      <button type="submit">进入</button>
+    </form>
+  </main>
+</body>
+</html>`;
+}
+
+function appendToken(url, token) {
+  if (!token) {
+    return url;
+  }
+  const separator = url.includes("?") ? "&" : "?";
+  return `${url}${separator}token=${encodeURIComponent(token)}`;
+}
+
+function localNetworkUrls(port) {
+  const urls = [];
+  for (const interfaces of Object.values(os.networkInterfaces())) {
+    for (const item of interfaces || []) {
+      if (item.family === "IPv4" && !item.internal) {
+        urls.push(`http://${item.address}:${port}`);
+      }
+    }
+  }
+  return urls;
 }
 
 async function readJson(filePath, fallback) {
@@ -525,6 +654,7 @@ function dashboardPage(root) {
 
       let searchResult = null;
       let debounceTimer = null;
+      const authToken = new URLSearchParams(location.search).get("token") || "";
 
       function escapeHtml(value) {
         return String(value ?? "")
@@ -557,6 +687,14 @@ function dashboardPage(root) {
 
       function escapeRegExp(value) {
         return String(value).replace(/[|\\\\{}()[\\]^$+*?.]/g, "\\\\$&");
+      }
+
+      function withAuthPath(path) {
+        if (!authToken) {
+          return path;
+        }
+        const separator = path.includes("?") ? "&" : "?";
+        return path + separator + "token=" + encodeURIComponent(authToken);
       }
 
       function setOptions(select, items, emptyLabel) {
@@ -650,7 +788,7 @@ function dashboardPage(root) {
         return \`
           <article class="artifact-card">
             <div class="card-main">
-              <a class="artifact-title" href="/artifacts/\${encodeURIComponent(artifact.id)}">\${highlight(artifact.title)}</a>
+              <a class="artifact-title" href="\${withAuthPath("/artifacts/" + encodeURIComponent(artifact.id))}">\${highlight(artifact.title)}</a>
               <p>\${escapeHtml(artifact.typeLabel)} · \${escapeHtml(progress)} · 更新于 \${escapeHtml(formatDate(artifact.updatedAt))}</p>
               <div class="tags">\${tags}</div>
             </div>
@@ -671,6 +809,9 @@ function dashboardPage(root) {
           if (element.value) {
             params.set(key, element.value);
           }
+        }
+        if (authToken) {
+          params.set("token", authToken);
         }
         return params;
       }
@@ -708,19 +849,21 @@ function dashboardPage(root) {
   `);
 }
 
-function artifactPage(artifact) {
+function artifactPage(artifact, pageToken = "") {
   const title = escapeHtml(artifact.title);
+  const fileSrc = appendToken(`/files/${encodeURIComponent(artifact.id)}/${encodeURIComponent(artifact.entry)}`, pageToken);
+  const backHref = appendToken("/", pageToken);
   return pageShell(`${title} - Artifact`, `
     <main class="artifact-view">
       <section class="artifact-frame">
         <header>
-          <a href="/" class="back">返回列表</a>
+          <a href="${escapeHtml(backHref)}" class="back">返回列表</a>
           <div>
             <h1>${title}</h1>
             <p>${escapeHtml(artifact.typeLabel)} · ${escapeHtml(artifact.statusLabel)}</p>
           </div>
         </header>
-        <iframe title="${title}" src="/files/${encodeURIComponent(artifact.id)}/${encodeURIComponent(artifact.entry)}"></iframe>
+        <iframe title="${title}" src="${escapeHtml(fileSrc)}"></iframe>
       </section>
       <aside class="state-panel">
         <div class="panel-header">
@@ -767,6 +910,7 @@ function artifactPage(artifact) {
       const copyState = document.querySelector("#copyState");
       const statusLabels = ${JSON.stringify(STATUS_LABELS)};
       const statusOptions = Object.keys(statusLabels);
+      const authToken = ${JSON.stringify(pageToken)} || new URLSearchParams(location.search).get("token") || "";
       let state = null;
 
       function escapeHtml(value) {
@@ -791,6 +935,14 @@ function artifactPage(artifact) {
         statusSelect.innerHTML = statusOptions.map((status) => \`
           <option value="\${escapeHtml(status)}">\${escapeHtml(statusLabels[status] || status)}</option>
         \`).join("");
+      }
+
+      function withAuthPath(path) {
+        if (!authToken) {
+          return path;
+        }
+        const separator = path.includes("?") ? "&" : "?";
+        return path + separator + "token=" + encodeURIComponent(authToken);
       }
 
       function renderState() {
@@ -831,7 +983,7 @@ function artifactPage(artifact) {
       }
 
       async function fetchJson(url, options = {}) {
-        const response = await fetch(url, options);
+        const response = await fetch(withAuthPath(url), options);
         const data = await response.json().catch(() => ({}));
         if (!response.ok) {
           throw new Error(data.error || "请求失败，请稍后重试。");
@@ -1545,7 +1697,8 @@ ${body}
 </html>`;
 }
 
-async function createApp(store) {
+async function createApp(store, options = {}) {
+  const authToken = String(options.token || "");
   const app = Fastify({
     bodyLimit: 1024 * 1024,
     logger: false
@@ -1560,6 +1713,26 @@ async function createApp(store) {
     root: store.root,
     serve: false
   });
+
+  if (authToken) {
+    app.addHook("onRequest", async (request, reply) => {
+      const requestToken = authTokenFromRequest(request);
+      if (requestToken === authToken) {
+        if (request.query?.token === authToken) {
+          reply.header("set-cookie", `artifact_token=${encodeURIComponent(authToken)}; Path=/; SameSite=Lax`);
+        }
+        return;
+      }
+
+      if (isApiRequest(request)) {
+        return reply.code(401).send({
+          error: "Artifact token is required."
+        });
+      }
+
+      return reply.code(401).type("text/html; charset=utf-8").send(tokenPromptPage());
+    });
+  }
 
   app.setErrorHandler((error, request, reply) => {
     const statusCode = error.statusCode || 500;
@@ -1579,7 +1752,8 @@ async function createApp(store) {
         error: "Artifact not found."
       });
     }
-    return reply.type("text/html; charset=utf-8").send(artifactPage(artifact));
+    const pageToken = typeof request.query?.token === "string" ? request.query.token : "";
+    return reply.type("text/html; charset=utf-8").send(artifactPage(artifact, pageToken));
   });
 
   app.get("/api/artifacts", async () => {
@@ -1664,17 +1838,32 @@ async function main() {
 
   const store = createStore(args.root);
   await store.ensureRoot();
-  const app = await createApp(store);
+  const app = await createApp(store, {
+    token: args.token
+  });
   await app.listen({
     host: args.host,
     port: args.port
   });
 
+  const loopbackUrl = appendToken(`http://127.0.0.1:${args.port}`, args.token);
   const urlHost = args.host === "0.0.0.0" ? "localhost" : args.host;
-  console.log(`Artifact server listening at http://${urlHost}:${args.port}`);
-  console.log(`Artifact root: ${store.root}`);
+  console.log(`Artifact server listening at ${appendToken(`http://${urlHost}:${args.port}`, args.token)}`);
+  console.log(`Loopback URL: ${loopbackUrl}`);
   if (args.host === "0.0.0.0") {
-    console.log("LAN sharing is enabled. Review artifact contents before sharing the URL.");
+    const lanUrls = localNetworkUrls(args.port).map((url) => appendToken(url, args.token));
+    if (lanUrls.length) {
+      console.log(`LAN URLs: ${lanUrls.join(", ")}`);
+    }
+  }
+  console.log(`Artifact root: ${store.root}`);
+  console.log(`Access token: ${args.token ? "enabled" : "disabled"}`);
+  if (args.host === "0.0.0.0") {
+    if (args.token) {
+      console.log("LAN sharing is enabled with token protection. Share URLs only with trusted colleagues.");
+    } else {
+      console.log("LAN sharing is enabled without token protection. Review artifact contents before sharing the URL.");
+    }
   }
 }
 

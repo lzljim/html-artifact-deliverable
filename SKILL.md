@@ -80,6 +80,14 @@ Use explicit flags when needed:
 node scripts/artifact-server.mjs --root <artifact-root> --host 127.0.0.1 --port 8787
 ```
 
+For LAN sharing, prefer enabling a token:
+
+```bash
+node scripts/artifact-server.mjs --host 0.0.0.0 --token <share-token>
+```
+
+The token can also be supplied with `ARTIFACT_TOKEN`. When configured, pages, API routes, and artifact files all require the token through `?token=...`, `x-artifact-token`, `Authorization: Bearer ...`, or the browser cookie set after a valid token visit.
+
 Publish an existing HTML file into the artifact root:
 
 ```bash
@@ -92,7 +100,7 @@ When `--title`, `--type`, or `--checkpoint` are omitted, the publish script infe
 - Type: inferred from title, path, and document text.
 - Checkpoints: inferred from phase headings such as `阶段 0` / `阶段 1A`.
 
-Only use `--host 0.0.0.0` after the user explicitly wants LAN sharing and has accepted the privacy risk.
+Only use `--host 0.0.0.0` after the user explicitly wants LAN sharing and has accepted the privacy risk. Avoid LAN sharing without a token for artifacts that include source snippets, local paths, logs, customer data, credentials, or internal URLs.
 
 ## Layout Defaults
 

@@ -23,6 +23,19 @@ With explicit settings:
 node scripts/artifact-server.mjs --root <artifact-root> --host 127.0.0.1 --port 8787
 ```
 
+With LAN sharing and token protection:
+
+```bash
+node scripts/artifact-server.mjs --root <artifact-root> --host 0.0.0.0 --port 8787 --token <share-token>
+```
+
+`ARTIFACT_TOKEN` can be used instead of `--token`. When a token is configured, every page, API route, and artifact file requires one of:
+
+- `?token=<share-token>`
+- `x-artifact-token: <share-token>`
+- `Authorization: Bearer <share-token>`
+- the `artifact_token` cookie set after a valid token visit
+
 Publish an existing HTML file:
 
 ```bash
@@ -44,6 +57,7 @@ Defaults:
 - Artifact root: `~/.codex/html-artifacts`
 - Host: `127.0.0.1`
 - Port: `8787`
+- Token: disabled unless `--token` or `ARTIFACT_TOKEN` is configured
 
 ## When To Publish
 
@@ -61,8 +75,10 @@ Keep a loose `.html` file when the artifact is private, disposable, tiny, or mus
 
 - Bind the service to `127.0.0.1` by default.
 - Bind to `0.0.0.0` only after the user explicitly wants LAN sharing.
+- Prefer `--token` or `ARTIFACT_TOKEN` whenever binding to `0.0.0.0`.
 - Treat source snippets, local file paths, logs, stack traces, customer data, credentials, and internal URLs as sensitive.
 - Prefer a simple share token before LAN sharing if the artifact contains non-public project context.
+- Do not write share tokens into `artifact.json`, `state.json`, or published HTML files.
 - Never imply that LAN sharing is safe for public internet exposure.
 
 ## Directory Contract

@@ -197,4 +197,71 @@ describe("artifact server", () => {
     });
     assert.equal(invalidNote.error, "Note text is required.");
   });
+
+  it("protects pages, APIs, and artifact files when a token is configured", async () => {
+    await writeArtifact("secure-plan", {
+      title: "Secure Plan"
+    }, {
+      checkpoints: [
+        {
+          id: "stage-1",
+          title: "Stage 1",
+          done: false,
+          doneAt: null,
+          note: ""
+        }
+      ]
+    });
+
+    await app.close();
+    app = await createApp(createStore(tempRoot), {
+      token: "secret-token"
+    });
+    await app.ready();
+
+    const apiWithoutToken = await app.inject({
+      method: "GET",
+      url: "/api/artifacts"
+    });
+    assert.equal(apiWithoutToken.statusCode, 401);
+    assert.equal(apiWithoutToken.json().error, "Artifact token is required.");
+
+    const pageWithoutToken = await app.inject({
+      method: "GET",
+      url: "/artifacts/secure-plan"
+    });
+    assert.equal(pageWithoutToken.statusCode, 401);
+    assert.match(pageWithoutToken.headers["content-type"], /text\/html/);
+    assert.match(pageWithoutToken.body, /name="token"/);
+
+    const pageWithToken = await app.inject({
+      method: "GET",
+      url: "/artifacts/secure-plan?token=secret-token"
+    });
+    assert.equal(pageWithToken.statusCode, 200);
+    assert.match(pageWithToken.body, /token=secret-token/);
+    assert.match(String(pageWithToken.headers["set-cookie"]), /artifact_token=secret-token/);
+
+    const apiWithHeader = await injectJson({
+      method: "GET",
+      url: "/api/artifacts/secure-plan/state",
+      headers: {
+        "x-artifact-token": "secret-token"
+      }
+    });
+    assert.equal(apiWithHeader.status, "in-progress");
+
+    const fileWithToken = await app.inject({
+      method: "GET",
+      url: "/files/secure-plan/index.html?token=secret-token"
+    });
+    assert.equal(fileWithToken.statusCode, 200);
+    assert.match(fileWithToken.body, /Secure Plan/);
+
+    const fileWithoutToken = await app.inject({
+      method: "GET",
+      url: "/files/secure-plan/index.html"
+    });
+    assert.equal(fileWithoutToken.statusCode, 401);
+  });
 });
