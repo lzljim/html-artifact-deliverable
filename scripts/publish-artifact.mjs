@@ -6,10 +6,15 @@ import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 
 const DEFAULT_ROOT = path.join(os.homedir(), ".codex", "html-artifacts");
+const DEFAULT_PORT = 8787;
+const DEFAULT_HOST = "127.0.0.1";
 
 function parseArgs(argv) {
   const args = {
     root: process.env.ARTIFACT_ROOT || DEFAULT_ROOT,
+    serverHost: process.env.ARTIFACT_HOST || DEFAULT_HOST,
+    serverPort: Number(process.env.ARTIFACT_PORT || DEFAULT_PORT),
+    serverToken: process.env.ARTIFACT_TOKEN || "",
     tags: [],
     checkpoints: [],
     autoCheckpoints: true
@@ -23,6 +28,12 @@ function parseArgs(argv) {
       args.html = argv[++index];
     } else if (arg === "--root") {
       args.root = argv[++index];
+    } else if (arg === "--server-host") {
+      args.serverHost = argv[++index];
+    } else if (arg === "--server-port") {
+      args.serverPort = Number(argv[++index]);
+    } else if (arg === "--server-token") {
+      args.serverToken = argv[++index] || "";
     } else if (arg === "--id") {
       args.id = argv[++index];
     } else if (arg === "--title") {
@@ -52,6 +63,7 @@ function printHelp() {
 Examples:
   node ${script} --html docs/ai/plan.html
   node ${script} --html report.html --collection metadata-upgrade:"Metadata Upgrade"
+  node ${script} --html report.html --server-host 0.0.0.0 --server-token <token>
   node ${script} --html report.html --checkpoint research:调研完成 --checkpoint verification:验证完成
   node ${script} --html notes.html --no-auto-checkpoints
 
@@ -62,7 +74,12 @@ Automatic behavior:
   title:       <title>, then <h1>, then file name
   type:        inferred from title/path/content unless --type is set
   checkpoints: inferred from phase-style headings unless --checkpoint is set
-  collection:  optional <id>:<title> project grouping`);
+  collection:  optional <id>:<title> project grouping
+
+Server URL output:
+  --server-host  defaults to ARTIFACT_HOST or 127.0.0.1
+  --server-port  defaults to ARTIFACT_PORT or 8787
+  --server-token defaults to ARTIFACT_TOKEN`);
 }
 
 function slugify(value) {
@@ -86,6 +103,41 @@ function shortHash(value) {
 
 function defaultId(title, htmlPath) {
   return `${todayPrefix()}-${slugify(title)}-${shortHash(`${title}:${htmlPath}`)}`;
+}
+
+function appendToken(url, token) {
+  if (!token) {
+    return url;
+  }
+  const separator = url.includes("?") ? "&" : "?";
+  return `${url}${separator}token=${encodeURIComponent(token)}`;
+}
+
+function localNetworkUrls(port) {
+  const urls = [];
+  for (const interfaces of Object.values(os.networkInterfaces())) {
+    for (const item of interfaces || []) {
+      if (item.family === "IPv4" && !item.internal) {
+        urls.push(`http://${item.address}:${port}`);
+      }
+    }
+  }
+  return urls;
+}
+
+function artifactUrls(args, artifactId) {
+  const artifactPath = `/artifacts/${encodeURIComponent(artifactId)}`;
+  const loopbackUrl = appendToken(`http://127.0.0.1:${args.serverPort}${artifactPath}`, args.serverToken);
+  const displayHost = args.serverHost === "0.0.0.0" ? "localhost" : args.serverHost;
+  const localUrl = appendToken(`http://${displayHost}:${args.serverPort}${artifactPath}`, args.serverToken);
+  const lanUrls = args.serverHost === "0.0.0.0"
+    ? localNetworkUrls(args.serverPort).map((url) => appendToken(`${url}${artifactPath}`, args.serverToken))
+    : [];
+  return {
+    localUrl,
+    loopbackUrl,
+    lanUrls
+  };
 }
 
 async function pathExists(filePath) {
@@ -393,6 +445,7 @@ async function main() {
   }
 
   await updateCollectionFile(root, collection, id);
+  const urls = artifactUrls(args, id);
 
   console.log(JSON.stringify({
     id,
@@ -401,7 +454,10 @@ async function main() {
     collection,
     checkpointCount: checkpoints.length,
     artifactDir,
-    url: `/artifacts/${encodeURIComponent(id)}`
+    url: `/artifacts/${encodeURIComponent(id)}`,
+    localUrl: urls.localUrl,
+    loopbackUrl: urls.loopbackUrl,
+    lanUrls: urls.lanUrls
   }, null, 2));
 }
 

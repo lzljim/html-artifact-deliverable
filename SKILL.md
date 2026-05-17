@@ -61,6 +61,19 @@ Start the server:
 npm start
 ```
 
+Development mode:
+
+```bash
+npm run dev
+```
+
+Windows helper:
+
+```powershell
+.\scripts\start-artifact-server.ps1
+.\scripts\start-artifact-server.ps1 -Lan
+```
+
 Run regression checks before committing server or publish-script changes:
 
 ```bash
@@ -74,6 +87,7 @@ Default behavior:
 - Port: `8787`
 - Detail pages provide status editing, checkpoint toggles, per-checkpoint notes, reviewer comments, resolve/reopen review flow, and JSON/Markdown status export.
 - The dashboard can group related artifacts into collections with aggregate progress and collection-level Markdown export.
+- Health check: `GET /api/health`
 
 Use explicit flags when needed:
 
@@ -89,6 +103,12 @@ node scripts/artifact-server.mjs --host 0.0.0.0 --token <share-token>
 
 The token can also be supplied with `ARTIFACT_TOKEN`. When configured, pages, API routes, and artifact files all require the token through `?token=...`, `x-artifact-token`, `Authorization: Bearer ...`, or the browser cookie set after a valid token visit.
 
+If the port is already in use, start with a different port:
+
+```bash
+node scripts/artifact-server.mjs --port 8788
+```
+
 Publish an existing HTML file into the artifact root:
 
 ```bash
@@ -99,6 +119,12 @@ Publish into a collection:
 
 ```bash
 node scripts/publish-artifact.mjs --html <file.html> --collection project-id:"Project Title"
+```
+
+When the server is already running, pass server settings to make the publish output include directly openable URLs:
+
+```bash
+node scripts/publish-artifact.mjs --html <file.html> --server-host 0.0.0.0 --server-token <share-token>
 ```
 
 When `--title`, `--type`, or `--checkpoint` are omitted, the publish script infers them from the HTML:

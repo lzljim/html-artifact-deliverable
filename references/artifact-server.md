@@ -11,6 +11,19 @@ npm install
 npm start
 ```
 
+Development mode:
+
+```bash
+npm run dev
+```
+
+Windows helper:
+
+```powershell
+.\scripts\start-artifact-server.ps1
+.\scripts\start-artifact-server.ps1 -Lan
+```
+
 Before committing changes to the server or publish script, run:
 
 ```bash
@@ -21,6 +34,18 @@ With explicit settings:
 
 ```bash
 node scripts/artifact-server.mjs --root <artifact-root> --host 127.0.0.1 --port 8787
+```
+
+Health check:
+
+```bash
+curl http://127.0.0.1:8787/api/health
+```
+
+When token protection is enabled:
+
+```bash
+curl "http://127.0.0.1:8787/api/health?token=<share-token>"
 ```
 
 With LAN sharing and token protection:
@@ -48,7 +73,13 @@ Publish into a collection:
 node scripts/publish-artifact.mjs --html <file.html> --collection metadata-upgrade:"Metadata Upgrade"
 ```
 
-The publish script copies the input file to `<artifact-root>/<id>/index.html`, writes `artifact.json`, and initializes `state.json` if it does not exist.
+Emit URLs for a running LAN server:
+
+```bash
+node scripts/publish-artifact.mjs --html <file.html> --server-host 0.0.0.0 --server-token <share-token>
+```
+
+The publish script copies the input file to `<artifact-root>/<id>/index.html`, writes `artifact.json`, initializes `state.json` if it does not exist, and prints local / loopback / LAN URLs based on server settings.
 
 For quick publishing, these fields are inferred when omitted:
 
@@ -65,6 +96,8 @@ Defaults:
 - Host: `127.0.0.1`
 - Port: `8787`
 - Token: disabled unless `--token` or `ARTIFACT_TOKEN` is configured
+
+If the server cannot start because the port is already in use, choose a new port such as `--port 8788` or stop the existing artifact server process.
 
 ## When To Publish
 
@@ -223,6 +256,7 @@ The included MVP Node.js service provides:
 ```text
 GET  /
 GET  /artifacts/:id
+GET  /api/health
 GET  /api/artifacts
 GET  /api/artifacts/search
 GET  /api/collections

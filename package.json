@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "node scripts/artifact-server.mjs",
+    "dev": "node --watch scripts/artifact-server.mjs",
     "test": "node --test tests/*.test.mjs",
     "check": "node --check scripts/artifact-server.mjs && node --check scripts/publish-artifact.mjs && npm test"
   },

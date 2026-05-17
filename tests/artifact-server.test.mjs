@@ -91,6 +91,15 @@ describe("artifact server", () => {
     });
     assert.deepEqual(list.map((item) => item.id).sort(), ["architecture-note", "plan-alpha"]);
 
+    const health = await injectJson({
+      method: "GET",
+      url: "/api/health"
+    });
+    assert.equal(health.status, "ok");
+    assert.equal(health.artifactCount, 2);
+    assert.equal(health.collectionCount, 0);
+    assert.equal(health.root, tempRoot);
+
     const search = await injectJson({
       method: "GET",
       url: "/api/artifacts/search?q=alpha&status=in-progress"
@@ -324,6 +333,12 @@ describe("artifact server", () => {
     });
     assert.equal(apiWithoutToken.statusCode, 401);
     assert.equal(apiWithoutToken.json().error, "Artifact token is required.");
+
+    const healthWithToken = await injectJson({
+      method: "GET",
+      url: "/api/health?token=secret-token"
+    });
+    assert.equal(healthWithToken.status, "ok");
 
     const pageWithoutToken = await app.inject({
       method: "GET",

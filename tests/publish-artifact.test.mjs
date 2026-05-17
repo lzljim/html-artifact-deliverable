@@ -54,6 +54,9 @@ describe("publish-artifact", () => {
     assert.equal(result.title, "Metadata Upgrade Plan");
     assert.equal(result.type, "implementation-plan");
     assert.equal(result.checkpointCount, 2);
+    assert.equal(result.localUrl, "http://127.0.0.1:8787/artifacts/metadata-plan");
+    assert.equal(result.loopbackUrl, "http://127.0.0.1:8787/artifacts/metadata-plan");
+    assert.deepEqual(result.lanUrls, []);
 
     const artifactDir = path.join(tempRoot, "metadata-plan");
     assert.equal(await fs.readFile(path.join(artifactDir, "index.html"), "utf8"), await fs.readFile(htmlPath, "utf8"));
@@ -125,6 +128,9 @@ describe("publish-artifact", () => {
       "--root", tempRoot,
       "--id", "review-artifact",
       "--collection", "metadata-upgrade:Metadata Upgrade",
+      "--server-host", "0.0.0.0",
+      "--server-port", "8788",
+      "--server-token", "share-token",
       "--no-auto-checkpoints"
     ]);
     const result = JSON.parse(stdout);
@@ -132,6 +138,9 @@ describe("publish-artifact", () => {
       id: "metadata-upgrade",
       title: "Metadata Upgrade"
     });
+    assert.equal(result.localUrl, "http://localhost:8788/artifacts/review-artifact?token=share-token");
+    assert.equal(result.loopbackUrl, "http://127.0.0.1:8788/artifacts/review-artifact?token=share-token");
+    assert.ok(Array.isArray(result.lanUrls));
 
     const artifact = await readJson(path.join(tempRoot, "review-artifact", "artifact.json"));
     assert.deepEqual(artifact.collection, {

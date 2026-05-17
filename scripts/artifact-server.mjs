@@ -71,6 +71,7 @@ Environment variables:
 Routes:
   GET  /
   GET  /artifacts/:id
+  GET  /api/health
   GET  /api/artifacts
   GET  /api/artifacts/search
   GET  /api/collections
@@ -239,6 +240,35 @@ function localNetworkUrls(port) {
     }
   }
   return urls;
+}
+
+function serverUrls({ host, port, token }) {
+  const loopbackUrl = appendToken(`http://127.0.0.1:${port}`, token);
+  const displayHost = host === "0.0.0.0" ? "localhost" : host;
+  const primaryUrl = appendToken(`http://${displayHost}:${port}`, token);
+  const lanUrls = host === "0.0.0.0"
+    ? localNetworkUrls(port).map((url) => appendToken(url, token))
+    : [];
+  return {
+    primaryUrl,
+    loopbackUrl,
+    lanUrls
+  };
+}
+
+function startupListenError(error, args) {
+  if (error?.code !== "EADDRINUSE") {
+    return error;
+  }
+  const message = [
+    `Port ${args.port} is already in use on ${args.host}.`,
+    `Try another port: node scripts/artifact-server.mjs --port ${args.port + 1}`,
+    "Or stop the existing artifact server process and retry."
+  ].join("\n");
+  const wrapped = new Error(message);
+  wrapped.code = error.code;
+  wrapped.cause = error;
+  return wrapped;
 }
 
 async function readJson(filePath, fallback) {
@@ -2276,6 +2306,20 @@ async function createApp(store, options = {}) {
     return reply.type("text/html; charset=utf-8").send(dashboardPage(store.root));
   });
 
+  app.get("/api/health", async () => {
+    const [artifacts, collections] = await Promise.all([
+      store.listArtifacts(),
+      store.listCollections()
+    ]);
+    return {
+      status: "ok",
+      root: store.root,
+      artifactCount: artifacts.length,
+      collectionCount: collections.length,
+      now: new Date().toISOString()
+    };
+  });
+
   app.get("/artifacts/:id", async (request, reply) => {
     const artifact = await store.getArtifact(request.params.id);
     if (!artifact) {
@@ -2404,21 +2448,22 @@ async function main() {
   const app = await createApp(store, {
     token: args.token
   });
-  await app.listen({
-    host: args.host,
-    port: args.port
-  });
-
-  const loopbackUrl = appendToken(`http://127.0.0.1:${args.port}`, args.token);
-  const urlHost = args.host === "0.0.0.0" ? "localhost" : args.host;
-  console.log(`Artifact server listening at ${appendToken(`http://${urlHost}:${args.port}`, args.token)}`);
-  console.log(`Loopback URL: ${loopbackUrl}`);
-  if (args.host === "0.0.0.0") {
-    const lanUrls = localNetworkUrls(args.port).map((url) => appendToken(url, args.token));
-    if (lanUrls.length) {
-      console.log(`LAN URLs: ${lanUrls.join(", ")}`);
-    }
+  try {
+    await app.listen({
+      host: args.host,
+      port: args.port
+    });
+  } catch (error) {
+    throw startupListenError(error, args);
   }
+
+  const urls = serverUrls(args);
+  console.log(`Artifact server listening at ${urls.primaryUrl}`);
+  console.log(`Loopback URL: ${urls.loopbackUrl}`);
+  if (urls.lanUrls.length) {
+    console.log(`LAN URLs: ${urls.lanUrls.join(", ")}`);
+  }
+  console.log(`Health check: ${appendToken(`${urls.loopbackUrl.split("?")[0]}/api/health`, args.token)}`);
   console.log(`Artifact root: ${store.root}`);
   console.log(`Access token: ${args.token ? "enabled" : "disabled"}`);
   if (args.host === "0.0.0.0") {
@@ -2438,7 +2483,7 @@ export {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch((error) => {
-    console.error(error.stack || error.message);
+    console.error(error.code === "EADDRINUSE" ? error.message : error.stack || error.message);
     process.exitCode = 1;
   });
 }
