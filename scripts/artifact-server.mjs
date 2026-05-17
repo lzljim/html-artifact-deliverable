@@ -33,7 +33,8 @@ function parseArgs(argv) {
     root: process.env.ARTIFACT_ROOT || DEFAULT_ROOT,
     host: process.env.ARTIFACT_HOST || DEFAULT_HOST,
     port: Number(process.env.ARTIFACT_PORT || DEFAULT_PORT),
-    token: process.env.ARTIFACT_TOKEN || ""
+    token: process.env.ARTIFACT_TOKEN || "",
+    readToken: process.env.ARTIFACT_READ_TOKEN || ""
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -48,6 +49,8 @@ function parseArgs(argv) {
       args.port = Number(argv[++index]);
     } else if (arg === "--token") {
       args.token = argv[++index] || "";
+    } else if (arg === "--read-token") {
+      args.readToken = argv[++index] || "";
     }
   }
 
@@ -56,7 +59,7 @@ function parseArgs(argv) {
 
 function printHelp() {
   const script = path.basename(fileURLToPath(import.meta.url));
-  console.log(`Usage: node ${script} [--root <dir>] [--host <host>] [--port <port>] [--token <token>]
+  console.log(`Usage: node ${script} [--root <dir>] [--host <host>] [--port <port>] [--token <token>] [--read-token <token>]
 
 Default root: ${DEFAULT_ROOT}
 Default host: ${DEFAULT_HOST}
@@ -67,6 +70,7 @@ Environment variables:
   ARTIFACT_HOST
   ARTIFACT_PORT
   ARTIFACT_TOKEN
+  ARTIFACT_READ_TOKEN
 
 Routes:
   GET  /
@@ -77,6 +81,8 @@ Routes:
   GET  /api/collections
   GET  /api/collections/:id/markdown
   GET  /api/artifacts/:id
+  GET  /api/artifacts/:id/markdown
+  GET  /api/artifacts/:id/export
   GET  /api/artifacts/:id/state
   PUT  /api/artifacts/:id/state
   POST /api/artifacts/:id/checkpoints/:checkpointId/toggle
@@ -155,6 +161,27 @@ function authTokenFromRequest(request) {
 
 function isApiRequest(request) {
   return request.url.startsWith("/api/");
+}
+
+function isReadMethod(method) {
+  return method === "GET" || method === "HEAD" || method === "OPTIONS";
+}
+
+function authModeFromRequest(request, { writeToken, readToken }) {
+  const requestToken = authTokenFromRequest(request);
+  if (writeToken && requestToken === writeToken) {
+    return {
+      mode: "write",
+      token: requestToken
+    };
+  }
+  if (readToken && requestToken === readToken) {
+    return {
+      mode: "read",
+      token: requestToken
+    };
+  }
+  return null;
 }
 
 function tokenPromptPage() {
@@ -410,6 +437,10 @@ function createStore(root) {
 
     if (filters.status) {
       items = items.filter((artifact) => artifact.status === filters.status);
+    } else if (filters.archived === "only") {
+      items = items.filter((artifact) => artifact.status === "archived");
+    } else if (filters.archived !== "include") {
+      items = items.filter((artifact) => artifact.status !== "archived");
     }
     if (filters.type) {
       items = items.filter((artifact) => artifact.type === filters.type);
@@ -454,6 +485,30 @@ function createStore(root) {
 
   async function getState(id) {
     return normalizeState(await readJson(path.join(artifactDir(id), "state.json"), defaultState()));
+  }
+
+  async function getArtifactMarkdown(id) {
+    const artifact = await getArtifact(id);
+    if (!artifact) {
+      return null;
+    }
+    const state = await getState(id);
+    return artifactStateMarkdown(artifact, state);
+  }
+
+  async function getArtifactBundle(id) {
+    const artifact = await getArtifact(id);
+    if (!artifact) {
+      return null;
+    }
+    const state = await getState(id);
+    const indexHtml = await fs.readFile(path.join(artifactDir(id), artifact.entry || "index.html"), "utf8");
+    return {
+      exportedAt: new Date().toISOString(),
+      artifact,
+      state,
+      indexHtml
+    };
   }
 
   async function putState(id, state) {
@@ -546,6 +601,8 @@ function createStore(root) {
     listCollections,
     getCollectionMarkdown,
     getArtifact,
+    getArtifactMarkdown,
+    getArtifactBundle,
     getState,
     putState,
     toggleCheckpoint,
@@ -714,6 +771,79 @@ function collectionMarkdown(collection) {
   return `${lines.join("\n").replace(/\n{3,}/g, "\n\n").trim()}\n`;
 }
 
+function artifactStateMarkdown(artifact, state) {
+  const lines = [
+    `# ${artifact.title}`,
+    "",
+    `- ID：${artifact.id}`,
+    `- 类型：${artifact.typeLabel}`,
+    `- 状态：${statusLabel(state.status)}`,
+    `- 阶段进度：${state.checkpoints.length ? `${state.checkpoints.filter((item) => item.done).length}/${state.checkpoints.length}` : "0/0"}`,
+    `- 评论数量：${state.notes.length}`,
+    ""
+  ];
+
+  if (state.checkpoints.length) {
+    lines.push("## 阶段", "");
+    for (const item of state.checkpoints) {
+      const doneAt = item.done && item.doneAt ? ` （${item.doneAt}）` : "";
+      lines.push(`- [${item.done ? "x" : " "}] ${item.title}${doneAt}`);
+      if (item.note) {
+        lines.push(`  - 备注：${item.note}`);
+      }
+    }
+    lines.push("");
+  }
+
+  if (state.notes.length) {
+    lines.push("## 评论", "");
+    lines.push(...commentsMarkdownLines(state));
+    lines.push("");
+  }
+
+  if (state.history.length) {
+    lines.push("## 最近历史", "");
+    for (const item of state.history.slice(-10).reverse()) {
+      const type = item.type || "event";
+      lines.push(`- ${item.at || ""}：${type}`);
+    }
+    lines.push("");
+  }
+
+  return `${lines.join("\n").replace(/\n{3,}/g, "\n\n").trim()}\n`;
+}
+
+function commentsMarkdownLines(state) {
+  const checkpointTitles = new Map(state.checkpoints.map((item) => [item.id, item.title]));
+  const groups = new Map([["", []]]);
+  for (const checkpoint of state.checkpoints) {
+    groups.set(checkpoint.id, []);
+  }
+  for (const item of state.notes) {
+    const key = groups.has(item.checkpointId) ? item.checkpointId : "";
+    groups.get(key).push(item);
+  }
+
+  const lines = [];
+  for (const [checkpointId, items] of groups) {
+    if (!items.length) {
+      continue;
+    }
+    lines.push(`### ${checkpointId ? checkpointTitles.get(checkpointId) || checkpointId : "全局"}`);
+    for (const item of items) {
+      const meta = [
+        item.resolved ? "已解决" : "未解决",
+        item.category || "general",
+        item.author || "",
+        item.at || ""
+      ].filter(Boolean).join(" / ");
+      lines.push(`- ${meta}：${item.text}`);
+    }
+    lines.push("");
+  }
+  return lines.length && lines.at(-1) === "" ? lines.slice(0, -1) : lines;
+}
+
 function normalizeState(state) {
   return {
     status: String(state?.status || "in-progress"),
@@ -817,6 +947,7 @@ function getSearchFilters(query) {
     type: query.type,
     tag: query.tag,
     collection: query.collection,
+    archived: query.archived,
     sort: query.sort
   };
 }
@@ -857,6 +988,14 @@ function dashboardPage(root) {
           <select id="tag"></select>
         </label>
         <label>
+          <span>归档</span>
+          <select id="archived">
+            <option value="">隐藏归档</option>
+            <option value="include">包含归档</option>
+            <option value="only">只看归档</option>
+          </select>
+        </label>
+        <label>
           <span>排序</span>
           <select id="sort">
             <option value="updated-desc">最近更新</option>
@@ -886,6 +1025,7 @@ function dashboardPage(root) {
         status: document.querySelector("#status"),
         type: document.querySelector("#type"),
         tag: document.querySelector("#tag"),
+        archived: document.querySelector("#archived"),
         sort: document.querySelector("#sort"),
         refresh: document.querySelector("#refresh"),
         resultSummary: document.querySelector("#resultSummary"),
@@ -1027,7 +1167,7 @@ function dashboardPage(root) {
         if (elements.query.value.trim()) {
           chips.push("搜索：" + elements.query.value.trim());
         }
-        for (const element of [elements.status, elements.type, elements.tag]) {
+        for (const element of [elements.status, elements.type, elements.tag, elements.archived]) {
           if (element.value) {
             chips.push(element.selectedOptions[0].textContent);
           }
@@ -1088,7 +1228,7 @@ function dashboardPage(root) {
         if (elements.query.value.trim()) {
           params.set("q", elements.query.value.trim());
         }
-        for (const [key, element] of [["status", elements.status], ["type", elements.type], ["tag", elements.tag], ["sort", elements.sort]]) {
+        for (const [key, element] of [["status", elements.status], ["type", elements.type], ["tag", elements.tag], ["archived", elements.archived], ["sort", elements.sort]]) {
           if (element.value) {
             params.set(key, element.value);
           }
@@ -1131,7 +1271,7 @@ function dashboardPage(root) {
       }
 
       elements.query.addEventListener("input", scheduleLoad);
-      for (const element of [elements.status, elements.type, elements.tag, elements.sort]) {
+      for (const element of [elements.status, elements.type, elements.tag, elements.archived, elements.sort]) {
         element.addEventListener("change", () => load({ preserveFacets: true }).catch(renderError));
       }
       elements.refresh.addEventListener("click", () => load().catch(renderError));
@@ -1159,10 +1299,12 @@ function dashboardPage(root) {
   `);
 }
 
-function artifactPage(artifact, pageToken = "") {
+function artifactPage(artifact, pageToken = "", readOnly = false) {
   const title = escapeHtml(artifact.title);
   const fileSrc = appendToken(`/files/${encodeURIComponent(artifact.id)}/${encodeURIComponent(artifact.entry)}`, pageToken);
   const backHref = appendToken("/", pageToken);
+  const markdownHref = appendToken(`/api/artifacts/${encodeURIComponent(artifact.id)}/markdown`, pageToken);
+  const bundleHref = appendToken(`/api/artifacts/${encodeURIComponent(artifact.id)}/export`, pageToken);
   return pageShell(`${title} - Artifact`, `
     <main class="artifact-view">
       <section class="artifact-frame">
@@ -1180,9 +1322,10 @@ function artifactPage(artifact, pageToken = "") {
           <h2>执行状态</h2>
           <span id="statusLabel" class="status" data-status="${escapeHtml(artifact.status)}">${escapeHtml(artifact.statusLabel)}</span>
         </div>
+        ${readOnly ? '<div class="readonly-banner">只读模式：可以查看和导出，不能修改状态、阶段或评论。</div>' : ""}
         <label class="status-control">
           <span>当前状态</span>
-          <select id="statusSelect"></select>
+          <select id="statusSelect" data-write-control></select>
         </label>
         <div id="stateFeedback" class="state-feedback" role="status" aria-live="polite"></div>
         <section>
@@ -1193,8 +1336,8 @@ function artifactPage(artifact, pageToken = "") {
           <h3>评论</h3>
           <form id="noteForm">
             <div class="note-fields">
-              <input id="noteAuthor" type="text" placeholder="作者">
-              <select id="noteCategory">
+              <input id="noteAuthor" type="text" placeholder="作者" data-write-control>
+              <select id="noteCategory" data-write-control>
                 <option value="general">一般</option>
                 <option value="question">问题</option>
                 <option value="risk">风险</option>
@@ -1202,9 +1345,9 @@ function artifactPage(artifact, pageToken = "") {
                 <option value="approval">认可</option>
               </select>
             </div>
-            <select id="noteCheckpoint"></select>
-            <textarea id="noteText" rows="3" placeholder="留下评审意见"></textarea>
-            <button type="submit">保存评论</button>
+            <select id="noteCheckpoint" data-write-control></select>
+            <textarea id="noteText" rows="3" placeholder="留下评审意见" data-write-control></textarea>
+            <button type="submit" data-write-control>保存评论</button>
           </form>
           <label class="note-filter">
             <span>筛选</span>
@@ -1216,6 +1359,8 @@ function artifactPage(artifact, pageToken = "") {
           <h3>导出</h3>
           <div class="panel-actions">
             <button id="copyMarkdown" type="button">复制 Markdown 状态</button>
+            <a class="button-link" href="${escapeHtml(markdownHref)}" download="${escapeHtml(artifact.id)}-status.md">下载 Markdown</a>
+            <a class="button-link" href="${escapeHtml(bundleHref)}" download="${escapeHtml(artifact.id)}-artifact-bundle.json">下载迁移包</a>
             <button id="copyComments" type="button">复制评论摘要</button>
             <button id="copyState" type="button">复制状态 JSON</button>
           </div>
@@ -1249,6 +1394,7 @@ function artifactPage(artifact, pageToken = "") {
         approval: "认可"
       };
       const authToken = ${JSON.stringify(pageToken)} || new URLSearchParams(location.search).get("token") || "";
+      const readOnly = ${JSON.stringify(readOnly)};
       let state = null;
 
       function escapeHtml(value) {
@@ -1319,15 +1465,15 @@ function artifactPage(artifact, pageToken = "") {
           checkpoints.innerHTML = state.checkpoints.map((item) => \`
             <article class="checkpoint">
               <label class="checkpoint-row">
-                <input type="checkbox" data-id="\${escapeHtml(item.id)}" \${item.done ? "checked" : ""}>
+                <input type="checkbox" data-id="\${escapeHtml(item.id)}" data-write-control \${item.done ? "checked" : ""}>
                 <span>
                   <strong>\${escapeHtml(item.title)}</strong>
                   <small>\${item.doneAt ? "完成于 " + escapeHtml(formatDate(item.doneAt)) : "未完成"}</small>
                 </span>
               </label>
               <div class="checkpoint-note">
-                <textarea rows="2" data-note-id="\${escapeHtml(item.id)}" placeholder="阶段备注">\${escapeHtml(item.note || "")}</textarea>
-                <button type="button" class="checkpoint-note-save" data-id="\${escapeHtml(item.id)}">保存</button>
+                <textarea rows="2" data-note-id="\${escapeHtml(item.id)}" placeholder="阶段备注" data-write-control>\${escapeHtml(item.note || "")}</textarea>
+                <button type="button" class="checkpoint-note-save" data-id="\${escapeHtml(item.id)}" data-write-control>保存</button>
               </div>
             </article>
           \`).join("");
@@ -1350,11 +1496,19 @@ function artifactPage(artifact, pageToken = "") {
               <p>\${escapeHtml(item.text)}</p>
               <div class="note-actions">
                 <span>\${item.resolved ? "已解决" + (item.resolvedAt ? " · " + escapeHtml(formatDate(item.resolvedAt)) : "") : "未解决"}</span>
-                <button type="button" data-note-id="\${escapeHtml(item.id)}" data-note-action="\${item.resolved ? "reopen" : "resolve"}">\${item.resolved ? "重新打开" : "标记解决"}</button>
+                <button type="button" data-note-id="\${escapeHtml(item.id)}" data-note-action="\${item.resolved ? "reopen" : "resolve"}" data-write-control>\${item.resolved ? "重新打开" : "标记解决"}</button>
               </div>
             </article>
           \`).join("");
         }
+        applyReadOnly();
+      }
+
+      function applyReadOnly() {
+        for (const element of document.querySelectorAll("[data-write-control]")) {
+          element.disabled = readOnly;
+        }
+        noteText.placeholder = readOnly ? "只读模式下不能新增评论" : "留下评审意见";
       }
 
       function filteredNotes() {
@@ -1428,6 +1582,11 @@ function artifactPage(artifact, pageToken = "") {
         if (!(target instanceof HTMLInputElement)) {
           return;
         }
+        if (readOnly) {
+          target.checked = !target.checked;
+          setFeedback("只读模式下不能修改阶段状态。", "error");
+          return;
+        }
         const checkpointId = target.dataset.id;
         try {
           state = await fetchJson(\`/api/artifacts/\${encodeURIComponent(artifactId)}/checkpoints/\${encodeURIComponent(checkpointId)}/toggle\`, {
@@ -1447,6 +1606,10 @@ function artifactPage(artifact, pageToken = "") {
       checkpoints.addEventListener("click", async (event) => {
         const target = event.target;
         if (!(target instanceof HTMLButtonElement) || !target.classList.contains("checkpoint-note-save")) {
+          return;
+        }
+        if (readOnly) {
+          setFeedback("只读模式下不能保存阶段备注。", "error");
           return;
         }
         const checkpointId = target.dataset.id;
@@ -1479,6 +1642,10 @@ function artifactPage(artifact, pageToken = "") {
       });
 
       statusSelect.addEventListener("change", async () => {
+        if (readOnly) {
+          setFeedback("只读模式下不能修改状态。", "error");
+          return;
+        }
         if (!state) {
           setFeedback("状态还没有加载完成。", "error");
           return;
@@ -1509,6 +1676,10 @@ function artifactPage(artifact, pageToken = "") {
 
       noteForm.addEventListener("submit", async (event) => {
         event.preventDefault();
+        if (readOnly) {
+          setFeedback("只读模式下不能新增评论。", "error");
+          return;
+        }
         if (!state) {
           setFeedback("状态还没有加载完成。", "error");
           return;
@@ -1550,6 +1721,10 @@ function artifactPage(artifact, pageToken = "") {
       notes.addEventListener("click", async (event) => {
         const target = event.target;
         if (!(target instanceof HTMLButtonElement) || !target.dataset.noteId) {
+          return;
+        }
+        if (readOnly) {
+          setFeedback("只读模式下不能修改评论状态。", "error");
           return;
         }
         const action = target.dataset.noteAction;
@@ -1719,7 +1894,21 @@ function pageShell(title, body) {
       cursor: pointer;
       padding: 8px 12px;
     }
+    .button-link {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 38px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--panel);
+      color: var(--text);
+      padding: 8px 12px;
+      text-align: center;
+      text-decoration: none;
+    }
     button:hover,
+    .button-link:hover,
     input:focus,
     select:focus,
     textarea:focus {
@@ -1862,7 +2051,7 @@ function pageShell(title, body) {
     }
     .filters {
       display: grid;
-      grid-template-columns: minmax(240px, 1.4fr) repeat(4, minmax(130px, 0.8fr));
+      grid-template-columns: minmax(220px, 1.4fr) repeat(5, minmax(118px, 0.8fr));
       gap: 10px;
       margin-bottom: 14px;
       border: 1px solid var(--border);
@@ -2079,6 +2268,16 @@ function pageShell(title, body) {
     .state-feedback.error {
       color: var(--blocked);
     }
+    .readonly-banner {
+      border: 1px solid color-mix(in srgb, var(--warning) 45%, var(--border));
+      border-radius: 8px;
+      background: color-mix(in srgb, var(--warning) 10%, var(--panel));
+      color: var(--warning);
+      padding: 10px;
+      margin-bottom: 12px;
+      font-size: 13px;
+      line-height: 1.5;
+    }
     .state-feedback button {
       margin-left: 8px;
       padding: 4px 8px;
@@ -2260,6 +2459,7 @@ ${body}
 
 async function createApp(store, options = {}) {
   const authToken = String(options.token || "");
+  const readToken = String(options.readToken || "");
   const app = Fastify({
     bodyLimit: 1024 * 1024,
     logger: false
@@ -2275,12 +2475,21 @@ async function createApp(store, options = {}) {
     serve: false
   });
 
-  if (authToken) {
+  if (authToken || readToken) {
     app.addHook("onRequest", async (request, reply) => {
-      const requestToken = authTokenFromRequest(request);
-      if (requestToken === authToken) {
-        if (request.query?.token === authToken) {
-          reply.header("set-cookie", `artifact_token=${encodeURIComponent(authToken)}; Path=/; SameSite=Lax`);
+      const auth = authModeFromRequest(request, {
+        writeToken: authToken,
+        readToken
+      });
+      if (auth) {
+        request.artifactAuth = auth;
+        if (request.query?.token === auth.token) {
+          reply.header("set-cookie", `artifact_token=${encodeURIComponent(auth.token)}; Path=/; SameSite=Lax`);
+        }
+        if (auth.mode === "read" && !isReadMethod(request.method)) {
+          return reply.code(403).send({
+            error: "Read-only artifact token cannot modify state."
+          });
         }
         return;
       }
@@ -2328,7 +2537,8 @@ async function createApp(store, options = {}) {
       });
     }
     const pageToken = typeof request.query?.token === "string" ? request.query.token : "";
-    return reply.type("text/html; charset=utf-8").send(artifactPage(artifact, pageToken));
+    const readOnly = request.artifactAuth?.mode === "read";
+    return reply.type("text/html; charset=utf-8").send(artifactPage(artifact, pageToken, readOnly));
   });
 
   app.get("/api/artifacts", async () => {
@@ -2361,6 +2571,28 @@ async function createApp(store, options = {}) {
       });
     }
     return artifact;
+  });
+
+  app.get("/api/artifacts/:id/markdown", async (request, reply) => {
+    const markdown = await store.getArtifactMarkdown(request.params.id);
+    if (markdown === null) {
+      return reply.code(404).send({
+        error: "Artifact not found."
+      });
+    }
+    reply.header("content-disposition", `attachment; filename="${request.params.id}-status.md"`);
+    return reply.type("text/markdown; charset=utf-8").send(markdown);
+  });
+
+  app.get("/api/artifacts/:id/export", async (request, reply) => {
+    const bundle = await store.getArtifactBundle(request.params.id);
+    if (bundle === null) {
+      return reply.code(404).send({
+        error: "Artifact not found."
+      });
+    }
+    reply.header("content-disposition", `attachment; filename="${request.params.id}-artifact-bundle.json"`);
+    return reply.type("application/json; charset=utf-8").send(bundle);
   });
 
   app.get("/api/artifacts/:id/state", async (request, reply) => {
@@ -2446,7 +2678,8 @@ async function main() {
   const store = createStore(args.root);
   await store.ensureRoot();
   const app = await createApp(store, {
-    token: args.token
+    token: args.token,
+    readToken: args.readToken
   });
   try {
     await app.listen({
@@ -2466,6 +2699,7 @@ async function main() {
   console.log(`Health check: ${appendToken(`${urls.loopbackUrl.split("?")[0]}/api/health`, args.token)}`);
   console.log(`Artifact root: ${store.root}`);
   console.log(`Access token: ${args.token ? "enabled" : "disabled"}`);
+  console.log(`Read-only token: ${args.readToken ? "enabled" : "disabled"}`);
   if (args.host === "0.0.0.0") {
     if (args.token) {
       console.log("LAN sharing is enabled with token protection. Share URLs only with trusted colleagues.");

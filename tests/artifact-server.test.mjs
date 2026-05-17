@@ -306,6 +306,98 @@ describe("artifact server", () => {
     assert.match(markdown.body, /阶段进度：1\/2/);
   });
 
+  it("hides archived artifacts by default but keeps them searchable", async () => {
+    await writeArtifact("active-plan", {
+      title: "Active Plan"
+    });
+    await writeArtifact("old-plan", {
+      title: "Old Plan"
+    }, {
+      status: "archived"
+    });
+
+    const defaultSearch = await injectJson({
+      method: "GET",
+      url: "/api/artifacts/search"
+    });
+    assert.deepEqual(defaultSearch.items.map((item) => item.id), ["active-plan"]);
+    assert.equal(defaultSearch.stats.total, 2);
+
+    const includeArchived = await injectJson({
+      method: "GET",
+      url: "/api/artifacts/search?archived=include"
+    });
+    assert.deepEqual(includeArchived.items.map((item) => item.id).sort(), ["active-plan", "old-plan"]);
+
+    const onlyArchived = await injectJson({
+      method: "GET",
+      url: "/api/artifacts/search?archived=only"
+    });
+    assert.deepEqual(onlyArchived.items.map((item) => item.id), ["old-plan"]);
+
+    const direct = await injectJson({
+      method: "GET",
+      url: "/api/artifacts/old-plan"
+    });
+    assert.equal(direct.status, "archived");
+  });
+
+  it("exports artifact markdown reports and migration bundles", async () => {
+    await writeArtifact("export-plan", {
+      title: "Export Plan",
+      tags: ["export"]
+    }, {
+      checkpoints: [
+        {
+          id: "stage-1",
+          title: "Stage 1",
+          done: true,
+          doneAt: "2026-05-17T00:00:00.000Z",
+          note: "Ready for review."
+        }
+      ],
+      notes: [
+        {
+          id: "note-1",
+          at: "2026-05-17T00:00:00.000Z",
+          text: "Looks good.",
+          author: "Alice",
+          category: "approval",
+          checkpointId: "stage-1",
+          resolved: false,
+          resolvedAt: null
+        }
+      ],
+      history: [
+        {
+          at: "2026-05-17T00:00:00.000Z",
+          type: "checkpoint.done",
+          checkpointId: "stage-1"
+        }
+      ]
+    });
+
+    const markdown = await app.inject({
+      method: "GET",
+      url: "/api/artifacts/export-plan/markdown"
+    });
+    assert.equal(markdown.statusCode, 200);
+    assert.match(markdown.headers["content-type"], /text\/markdown/);
+    assert.match(markdown.headers["content-disposition"], /export-plan-status\.md/);
+    assert.match(markdown.body, /# Export Plan/);
+    assert.match(markdown.body, /- \[x\] Stage 1/);
+    assert.match(markdown.body, /Looks good\./);
+
+    const bundle = await injectJson({
+      method: "GET",
+      url: "/api/artifacts/export-plan/export"
+    });
+    assert.equal(bundle.artifact.id, "export-plan");
+    assert.equal(bundle.state.checkpoints[0].note, "Ready for review.");
+    assert.match(bundle.indexHtml, /Export Plan/);
+    assert.ok(bundle.exportedAt);
+  });
+
   it("protects pages, APIs, and artifact files when a token is configured", async () => {
     await writeArtifact("secure-plan", {
       title: "Secure Plan"
@@ -377,5 +469,61 @@ describe("artifact server", () => {
       url: "/files/secure-plan/index.html"
     });
     assert.equal(fileWithoutToken.statusCode, 401);
+  });
+
+  it("allows read-only tokens to view and export without mutating state", async () => {
+    await writeArtifact("readonly-plan", {
+      title: "Readonly Plan"
+    }, {
+      checkpoints: [
+        {
+          id: "stage-1",
+          title: "Stage 1",
+          done: false,
+          doneAt: null,
+          note: ""
+        }
+      ]
+    });
+
+    await app.close();
+    app = await createApp(createStore(tempRoot), {
+      token: "write-token",
+      readToken: "read-token"
+    });
+    await app.ready();
+
+    const stateWithReadToken = await injectJson({
+      method: "GET",
+      url: "/api/artifacts/readonly-plan/state?token=read-token"
+    });
+    assert.equal(stateWithReadToken.status, "in-progress");
+
+    const pageWithReadToken = await app.inject({
+      method: "GET",
+      url: "/artifacts/readonly-plan?token=read-token"
+    });
+    assert.equal(pageWithReadToken.statusCode, 200);
+    assert.match(pageWithReadToken.body, /只读模式/);
+
+    const markdownWithReadToken = await app.inject({
+      method: "GET",
+      url: "/api/artifacts/readonly-plan/markdown?token=read-token"
+    });
+    assert.equal(markdownWithReadToken.statusCode, 200);
+    assert.match(markdownWithReadToken.body, /Readonly Plan/);
+
+    const blockedToggle = await app.inject({
+      method: "POST",
+      url: "/api/artifacts/readonly-plan/checkpoints/stage-1/toggle?token=read-token"
+    });
+    assert.equal(blockedToggle.statusCode, 403);
+    assert.equal(blockedToggle.json().error, "Read-only artifact token cannot modify state.");
+
+    const writeToggle = await injectJson({
+      method: "POST",
+      url: "/api/artifacts/readonly-plan/checkpoints/stage-1/toggle?token=write-token"
+    });
+    assert.equal(writeToggle.checkpoints[0].done, true);
   });
 });

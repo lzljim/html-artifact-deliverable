@@ -42,10 +42,19 @@ Windows 可以用 helper：
 node scripts/artifact-server.mjs --host 0.0.0.0 --token <share-token>
 ```
 
+如果只希望同事查看和导出，不希望他们误改状态，可以额外配置只读 token：
+
+```bash
+node scripts/artifact-server.mjs --host 0.0.0.0 --token <edit-token> --read-token <view-token>
+```
+
+`<edit-token>` 可以查看和修改，`<view-token>` 只能访问页面、文件、Markdown 报告和迁移包导出，不能写入 `state.json`。
+
 Windows helper 会在 `-Lan` 时自动生成 token：
 
 ```powershell
 .\scripts\start-artifact-server.ps1 -Lan
+.\scripts\start-artifact-server.ps1 -Lan -Token <edit-token> -ReadToken <view-token>
 ```
 
 启动后终端会打印 loopback URL、LAN URL、健康检查地址和安全提示。只把带 token 的 URL 发给可信同事。
@@ -93,6 +102,14 @@ npm run check
 ```
 
 `npm run check` 会执行语法检查和 `node:test` 回归用例。提交服务或发布脚本改动前请先运行。
+
+## 状态、归档和导出
+
+详情页可以修改状态、勾选 checkpoints、保存阶段备注、记录评论，并复制或下载当前状态报告。
+
+- `archived` 状态表示已归档。归档 artifact 默认不出现在工作台搜索结果里，但直接 URL、项目集和显式“包含归档 / 只看归档”筛选仍可访问。
+- `GET /api/artifacts/<id>/markdown` 会从 `state.json` 生成可贴到 PR / 周报的 Markdown 状态报告。
+- `GET /api/artifacts/<id>/export` 会导出包含 `artifact.json` 视图、`state.json` 和 `index.html` 内容的 JSON 迁移包。
 
 ## 目录结构
 

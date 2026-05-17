@@ -3,6 +3,7 @@ param(
   [string]$HostName = "127.0.0.1",
   [int]$Port = 8787,
   [string]$Token = "",
+  [string]$ReadToken = "",
   [switch]$Lan
 )
 
@@ -22,6 +23,9 @@ $serverScript = Join-Path $scriptDir "artifact-server.mjs"
 $argsList = @($serverScript, "--root", $Root, "--host", $HostName, "--port", [string]$Port)
 if ($Token) {
   $argsList += @("--token", $Token)
+}
+if ($ReadToken) {
+  $argsList += @("--read-token", $ReadToken)
 }
 
 Set-Location $repoDir

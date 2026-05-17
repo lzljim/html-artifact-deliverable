@@ -22,6 +22,7 @@ Windows helper:
 ```powershell
 .\scripts\start-artifact-server.ps1
 .\scripts\start-artifact-server.ps1 -Lan
+.\scripts\start-artifact-server.ps1 -Lan -Token <edit-token> -ReadToken <view-token>
 ```
 
 Before committing changes to the server or publish script, run:
@@ -54,12 +55,20 @@ With LAN sharing and token protection:
 node scripts/artifact-server.mjs --root <artifact-root> --host 0.0.0.0 --port 8787 --token <share-token>
 ```
 
-`ARTIFACT_TOKEN` can be used instead of `--token`. When a token is configured, every page, API route, and artifact file requires one of:
+For read-only sharing, keep the normal token as the edit token and add a read token:
+
+```bash
+node scripts/artifact-server.mjs --root <artifact-root> --host 0.0.0.0 --port 8787 --token <edit-token> --read-token <view-token>
+```
+
+`ARTIFACT_TOKEN` can be used instead of `--token`, and `ARTIFACT_READ_TOKEN` can be used instead of `--read-token`. When a token is configured, every page, API route, and artifact file requires one of:
 
 - `?token=<share-token>`
 - `x-artifact-token: <share-token>`
 - `Authorization: Bearer <share-token>`
 - the `artifact_token` cookie set after a valid token visit
+
+The edit token allows reads and writes. The read token allows `GET` / `HEAD` requests only, so colleagues can view, search, copy Markdown, and download bundles without changing `state.json`.
 
 Publish an existing HTML file:
 
@@ -96,6 +105,7 @@ Defaults:
 - Host: `127.0.0.1`
 - Port: `8787`
 - Token: disabled unless `--token` or `ARTIFACT_TOKEN` is configured
+- Read-only token: disabled unless `--read-token` or `ARTIFACT_READ_TOKEN` is configured
 
 If the server cannot start because the port is already in use, choose a new port such as `--port 8788` or stop the existing artifact server process.
 
@@ -229,6 +239,8 @@ Review comments are stored in the same `notes` array. Older notes with only `id`
 
 Recommended `category` values are `general`, `question`, `risk`, `action`, and `approval`.
 
+Use `"status": "archived"` to archive an artifact. Archived artifacts are hidden from the default dashboard search so current work stays focused, but they are not deleted: direct artifact URLs, collections, `GET /api/artifacts/:id`, and search with `archived=include` or `archived=only` still expose them.
+
 ## Checkpoint Rules
 
 For plans and phased work, include checkpoints in `state.json` instead of hard-coding completion state into `index.html`.
@@ -262,6 +274,8 @@ GET  /api/artifacts/search
 GET  /api/collections
 GET  /api/collections/:id/markdown
 GET  /api/artifacts/:id
+GET  /api/artifacts/:id/markdown
+GET  /api/artifacts/:id/export
 GET  /api/artifacts/:id/state
 PUT  /api/artifacts/:id/state
 POST /api/artifacts/:id/checkpoints/:checkpointId/toggle
@@ -270,7 +284,12 @@ POST /api/artifacts/:id/notes/:noteId/resolve
 POST /api/artifacts/:id/notes/:noteId/reopen
 ```
 
-The dashboard groups collection artifacts and shows aggregate progress. The artifact detail page lets reviewers edit status, toggle checkpoints, maintain checkpoint notes, add artifact comments, filter comments by phase, resolve or reopen comments, and copy the current state or comment summary as JSON/Markdown.
+The dashboard groups collection artifacts and shows aggregate progress. The artifact detail page lets reviewers edit status, toggle checkpoints, maintain checkpoint notes, add artifact comments, filter comments by phase, resolve or reopen comments, and copy or download the current state or comment summary as JSON/Markdown.
+
+Artifact-level export endpoints:
+
+- `GET /api/artifacts/:id/markdown`: returns a Markdown status report generated from `artifact.json` plus `state.json`, suitable for PRs and weekly reports.
+- `GET /api/artifacts/:id/export`: returns a JSON migration bundle with artifact metadata, normalized state, `index.html` content, and `exportedAt`.
 
 MVP storage should be JSON files, not a database. Use atomic writes for `state.json` when possible.
 
