@@ -1,11 +1,11 @@
 ---
 name: html-artifact-deliverable
-description: Create a self-contained HTML artifact instead of Markdown when the user asks for a substantial report, plan, comparison, code review, PR writeup, architecture explanation, timeline, diagram-heavy document, visual prototype, slide-like walkthrough, or one-off editor/tool where layout, color, navigation, interaction, checkpoint tracking, or shareability materially improves the result. Use this for Chinese or English deliverables that need to be opened locally as a single .html file or published into a local Node.js artifact server for team viewing and state tracking. Stay in Markdown for short replies, code-only snippets, terminal instructions, durable git-reviewed docs, or content that is mainly plain text.
+description: Create and publish a self-contained HTML artifact instead of Markdown when the user asks for a substantial report, plan, comparison, code review, PR writeup, architecture explanation, timeline, diagram-heavy document, visual prototype, slide-like walkthrough, or one-off editor/tool where layout, color, navigation, interaction, checkpoint tracking, or shareability materially improves the result. Use this for Chinese or English deliverables that should be published into the local Node.js artifact server for viewing, history, and state tracking. Stay in Markdown for short replies, code-only snippets, terminal instructions, durable git-reviewed docs, or content that is mainly plain text.
 ---
 
 # HTML Artifact Deliverable
 
-Use this skill to turn substantial agent deliverables into a single local HTML file when HTML is a better medium than Markdown. When the artifact needs team sharing, progress tracking, or later review, publish it into a local artifact server contract instead of leaving it as a loose file.
+Use this skill to turn substantial agent deliverables into a published HTML artifact when HTML is a better medium than Markdown. Always publish the generated HTML into the local artifact server contract; a loose `.html` file is only a staging/source file, not the final deliverable.
 
 ## Decision Rule
 
@@ -39,13 +39,13 @@ Every HTML artifact must:
 
 1. Identify the artifact type: comparison, plan, code review, report, diagram explainer, prototype, deck, or editor.
 2. Read `references/patterns.md` for the matching pattern if the task is non-trivial.
-3. Read `references/artifact-server.md` when the user asks to share with colleagues, publish, track phases, persist checklist state, or use a Node.js service.
+3. Read `references/artifact-server.md` before publishing, unless the current turn has already loaded it.
 4. Gather the task evidence first. Do not make the HTML prettier than the analysis is true.
-5. Save the artifact in the current workspace using a descriptive kebab-case filename, or under `docs/ai/` when it is a planning/research artifact for a repository.
-6. If artifact-server publication is requested or clearly useful, write the artifact using the directory contract in `references/artifact-server.md`.
+5. Create a self-contained staging HTML file using a descriptive kebab-case filename. Prefer a temporary or artifact-source location; only keep a repo-local copy when the user explicitly wants that source file committed or maintained.
+6. Always publish the staging HTML with `scripts/publish-artifact.mjs`, using the directory contract in `references/artifact-server.md`. Publish into the most relevant existing collection when one is obvious.
 7. If the artifact includes JavaScript interactions, keep state local to the page and provide a visible copy/export button.
 8. Verify the file opens: for simple files inspect the HTML statically; for UI-heavy files use the browser or Playwright when available.
-9. Reply with the path or URL, the reason HTML/server publication was chosen, and any validation that was or was not performed.
+9. Reply with the artifact server URL, artifact directory, whether the URL is loopback-only or LAN-visible, and any validation that was or was not performed.
 
 ## Artifact Server Script
 
@@ -117,7 +117,7 @@ If the port is already in use, start with a different port:
 node scripts/artifact-server.mjs --port 8788
 ```
 
-Publish an existing HTML file into the artifact root:
+Publish every generated HTML file into the artifact root:
 
 ```bash
 node scripts/publish-artifact.mjs --html <file.html> --title "<title>" --type implementation-plan --checkpoint research:调研完成
@@ -151,7 +151,7 @@ Only use `--host 0.0.0.0` after the user explicitly wants LAN sharing and has ac
 - Code reviews: finding list first, severity coloring, file anchors, line-focused notes, compact summary.
 - Reports: executive conclusion first, evidence sections, timeline or matrix when chronology or tradeoffs matter.
 - Editors: dominant work surface, prefilled user data, immediate validation, keyboard-friendly controls, export bar.
-- Published artifacts: `index.html` for stable content, `artifact.json` for metadata, `state.json` for mutable checkpoints and notes.
+- Published artifacts: `index.html` for stable content, `artifact.json` for metadata, `state.json` for mutable checkpoints and notes. This is the normal final form for every HTML artifact created with this skill.
 - Collections: root `collection.json` groups multiple artifact ids into one project/topic and derives progress from child checkpoints.
 
 ## Guardrails
@@ -162,4 +162,5 @@ Only use `--host 0.0.0.0` after the user explicitly wants LAN sharing and has ac
 - Do not bury the conclusion below a large hero section.
 - Do not create an app when a static artifact is enough.
 - Do not omit a Markdown/JSON export path for editors.
+- Do not stop after creating a loose `.html` file; publish it to the local artifact server before replying.
 - Do not expose internal code, logs, paths, or business data on a network-bound artifact server without an explicit sharing decision.

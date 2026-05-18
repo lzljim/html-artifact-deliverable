@@ -1,6 +1,6 @@
 # Artifact Server Contract
 
-Use this reference when an HTML artifact should be published into a local Node.js service instead of saved as a loose file. The included MVP server lives at `scripts/artifact-server.mjs` and uses Fastify, `@fastify/static`, and MiniSearch; do not start it unless the user asks for sharing, tracking, publishing, or a runnable service.
+Use this reference when publishing an HTML artifact into the local Node.js service. HTML artifacts created with this skill should be published here by default instead of delivered as loose files. The included MVP server lives at `scripts/artifact-server.mjs` and uses Fastify, `@fastify/static`, and MiniSearch.
 
 ## Start Command
 
@@ -117,17 +117,11 @@ Defaults:
 
 If the server cannot start because the port is already in use, choose a new port such as `--port 8788` or stop the existing artifact server process.
 
-## When To Publish
+## Publishing Rule
 
-Publish to an artifact server when any of these is true:
+Always publish HTML artifacts created with this skill to the artifact server. Use a loose `.html` file only as a staging/source file before running `scripts/publish-artifact.mjs`.
 
-- The user wants to share the artifact with colleagues through a URL.
-- The artifact is an execution plan with phases, checkpoints, review gates, or follow-up state.
-- The artifact should stay discoverable from a dashboard or history list.
-- Multiple artifacts belong to one investigation or implementation thread.
-- The user asks for persistent notes, done flags, reviewer comments, or status history.
-
-Keep a loose `.html` file when the artifact is private, disposable, tiny, or must remain fully portable without a server.
+If no artifact server is running, start the loopback server with the default host and port before replying. Keep the service bound to `127.0.0.1` unless the user explicitly asks for LAN sharing.
 
 ## Default Safety
 
