@@ -29,6 +29,30 @@ const TYPE_LABELS = {
   "research-report": "调研报告"
 };
 
+const REVIEW_STATE_LABELS = {
+  clean: "无未解决项",
+  "needs-review": "待 Review",
+  "changes-requested": "需修改",
+  approved: "已认可",
+  blocked: "阻塞"
+};
+
+const NOTE_REVIEW_STATE_LABELS = {
+  open: "待处理",
+  "in-progress": "处理中",
+  "changes-requested": "需修改",
+  approved: "已认可",
+  blocked: "阻塞",
+  resolved: "已解决"
+};
+
+const SEVERITY_LABELS = {
+  low: "低",
+  medium: "中",
+  high: "高",
+  blocker: "阻塞"
+};
+
 function parseArgs(argv) {
   const args = {
     root: process.env.ARTIFACT_ROOT || DEFAULT_ROOT,
@@ -125,6 +149,18 @@ function typeLabel(type) {
 
 function statusLabel(status) {
   return STATUS_LABELS[status] || status || "未知";
+}
+
+function reviewStateLabel(reviewState) {
+  return REVIEW_STATE_LABELS[reviewState] || reviewState || "无未解决项";
+}
+
+function noteReviewStateLabel(reviewState) {
+  return NOTE_REVIEW_STATE_LABELS[reviewState] || reviewState || "待处理";
+}
+
+function severityLabel(severity) {
+  return SEVERITY_LABELS[severity] || severity || "";
 }
 
 function parseCookies(header) {
@@ -379,7 +415,7 @@ function createStore(root) {
         updatedAt: stat.mtime.toISOString(),
         tags: []
       });
-      const state = await readJson(statePath, defaultState());
+      const state = normalizeState(await readJson(statePath, defaultState()));
 
       artifacts.push(normalizeArtifact(metadata, state, entry.name));
     }
@@ -617,8 +653,12 @@ function createStore(root) {
       at: new Date().toISOString(),
       text,
       author: String(note?.author || "").trim(),
-      category: String(note?.category || "general").trim() || "general",
+      category: normalizeNoteCategory(note?.category),
       checkpointId: String(note?.checkpointId || "").trim(),
+      reviewState: normalizeNoteReviewState(note?.reviewState, false, note?.category),
+      severity: normalizeSeverity(note?.severity, note?.category, note?.reviewState),
+      owner: String(note?.owner || "").trim(),
+      dueAt: normalizeDueAt(note?.dueAt),
       resolved: false,
       resolvedAt: null
     };
@@ -693,6 +733,7 @@ function normalizeArtifact(metadata, state, fallbackId) {
   const checkpointCount = state.checkpoints.length;
   const doneCheckpointCount = state.checkpoints.filter((item) => item.done).length;
   const review = reviewMetrics(state);
+  const checkpointReviews = checkpointReviewMetrics(state);
   return {
     id: String(metadata.id || fallbackId),
     title: String(metadata.title || metadata.id || fallbackId),
@@ -712,7 +753,8 @@ function normalizeArtifact(metadata, state, fallbackId) {
       id: item.id,
       title: item.title,
       done: item.done,
-      doneAt: item.doneAt || null
+      doneAt: item.doneAt || null,
+      review: checkpointReviews.get(item.id) || emptyReviewSummary()
     })),
     progressPercent: checkpointCount ? Math.round((doneCheckpointCount / checkpointCount) * 100) : null,
     noteCount: state.notes.length,
@@ -720,16 +762,24 @@ function normalizeArtifact(metadata, state, fallbackId) {
     riskNoteCount: review.riskNoteCount,
     actionNoteCount: review.actionNoteCount,
     questionNoteCount: review.questionNoteCount,
+    blockedNoteCount: review.blockedNoteCount,
+    changesRequestedNoteCount: review.changesRequestedNoteCount,
+    approvalNoteCount: review.approvalNoteCount,
+    overdueNoteCount: review.overdueNoteCount,
+    highestSeverity: review.highestSeverity,
+    highestSeverityLabel: review.highestSeverity ? severityLabel(review.highestSeverity) : "",
+    reviewState: review.reviewState,
+    reviewStateLabel: reviewStateLabel(review.reviewState),
     lastNoteAt: review.lastNoteAt,
     latestOpenNote: review.latestOpenNote,
     reviewPriority: review.reviewPriority,
-    needsReview: review.openNoteCount > 0 || review.riskNoteCount > 0 || review.actionNoteCount > 0,
-    blockedOrRisk: (state.status || "in-progress") === "blocked" || review.riskNoteCount > 0
+    needsReview: review.reviewState === "needs-review" || review.reviewState === "changes-requested" || review.reviewState === "blocked",
+    blockedOrRisk: review.reviewState === "blocked" || review.riskNoteCount > 0
   };
 }
 
 function reviewMetrics(state) {
-  const openNotes = state.notes.filter((item) => !item.resolved);
+  const openNotes = state.notes.filter((item) => !isReviewClosed(item));
   const latestOpenNote = openNotes
     .slice()
     .sort(compareNotesForReview)
@@ -739,11 +789,21 @@ function reviewMetrics(state) {
     .filter(Boolean)
     .sort()
     .at(-1) || null;
+  const highestSeverity = highestNoteSeverity(openNotes);
+  const reviewState = deriveReviewState(openNotes, state.status, state.notes);
   return {
     openNoteCount: openNotes.length,
     riskNoteCount: openNotes.filter((item) => item.category === "risk").length,
     actionNoteCount: openNotes.filter((item) => item.category === "action").length,
     questionNoteCount: openNotes.filter((item) => item.category === "question").length,
+    blockedNoteCount: openNotes.filter((item) => item.reviewState === "blocked" || item.severity === "blocker").length,
+    changesRequestedNoteCount: openNotes.filter((item) => item.reviewState === "changes-requested").length,
+    approvalNoteCount: state.notes.filter((item) => item.reviewState === "approved").length,
+    overdueNoteCount: openNotes.filter((item) => isOverdue(item.dueAt)).length,
+    highestSeverity,
+    highestSeverityLabel: highestSeverity ? severityLabel(highestSeverity) : "",
+    reviewState,
+    reviewStateLabel: reviewStateLabel(reviewState),
     lastNoteAt,
     latestOpenNote: latestOpenNote ? summarizeNote(latestOpenNote) : null,
     reviewPriority: reviewPriority(openNotes, state.status)
@@ -751,8 +811,71 @@ function reviewMetrics(state) {
 }
 
 function compareNotesForReview(left, right) {
-  return noteCategoryPriority(right.category) - noteCategoryPriority(left.category)
+  return noteReviewPriority(right) - noteReviewPriority(left)
     || String(right.at || "").localeCompare(String(left.at || ""));
+}
+
+function checkpointReviewMetrics(state) {
+  const metrics = new Map();
+  for (const checkpoint of state.checkpoints) {
+    metrics.set(checkpoint.id, reviewMetrics({
+      status: "",
+      checkpoints: [],
+      notes: state.notes.filter((item) => item.checkpointId === checkpoint.id),
+      history: []
+    }));
+  }
+  return metrics;
+}
+
+function emptyReviewSummary() {
+  return {
+    openNoteCount: 0,
+    riskNoteCount: 0,
+    actionNoteCount: 0,
+    questionNoteCount: 0,
+    blockedNoteCount: 0,
+    changesRequestedNoteCount: 0,
+    approvalNoteCount: 0,
+    overdueNoteCount: 0,
+    highestSeverity: "",
+    highestSeverityLabel: "",
+    reviewState: "clean",
+    reviewStateLabel: reviewStateLabel("clean"),
+    lastNoteAt: null,
+    latestOpenNote: null,
+    reviewPriority: 0
+  };
+}
+
+function isReviewClosed(note) {
+  return Boolean(note.resolved) || note.reviewState === "resolved" || note.reviewState === "approved";
+}
+
+function deriveReviewState(openNotes, status, allNotes = []) {
+  if (status === "blocked" || openNotes.some((item) => item.reviewState === "blocked" || item.severity === "blocker")) {
+    return "blocked";
+  }
+  if (openNotes.some((item) => item.reviewState === "changes-requested")) {
+    return "changes-requested";
+  }
+  if (openNotes.length) {
+    return "needs-review";
+  }
+  if (allNotes.some((item) => item.reviewState === "approved")) {
+    return "approved";
+  }
+  return "clean";
+}
+
+function noteReviewPriority(note) {
+  if (note.reviewState === "blocked" || note.severity === "blocker") {
+    return 5;
+  }
+  if (note.reviewState === "changes-requested" || note.severity === "high") {
+    return 4;
+  }
+  return noteCategoryPriority(note.category);
 }
 
 function noteCategoryPriority(category) {
@@ -769,8 +892,8 @@ function noteCategoryPriority(category) {
 }
 
 function reviewPriority(openNotes, status) {
-  const categoryPriority = openNotes.reduce((max, item) => Math.max(max, noteCategoryPriority(item.category)), 0);
-  return Math.max(categoryPriority, status === "blocked" ? 3 : 0);
+  const itemPriority = openNotes.reduce((max, item) => Math.max(max, noteReviewPriority(item)), 0);
+  return Math.max(itemPriority, status === "blocked" ? 5 : 0);
 }
 
 function summarizeNote(note) {
@@ -780,7 +903,14 @@ function summarizeNote(note) {
     text: note.text,
     author: note.author,
     category: note.category,
-    checkpointId: note.checkpointId
+    checkpointId: note.checkpointId,
+    reviewState: note.reviewState,
+    reviewStateLabel: noteReviewStateLabel(note.reviewState),
+    severity: note.severity,
+    severityLabel: severityLabel(note.severity),
+    owner: note.owner,
+    dueAt: note.dueAt,
+    overdue: isOverdue(note.dueAt)
   };
 }
 
@@ -865,9 +995,12 @@ function buildCollections(configs, artifacts) {
     const openNoteCount = collectionArtifacts.reduce((sum, item) => sum + item.openNoteCount, 0);
     const riskNoteCount = collectionArtifacts.reduce((sum, item) => sum + item.riskNoteCount, 0);
     const actionNoteCount = collectionArtifacts.reduce((sum, item) => sum + item.actionNoteCount, 0);
+    const blockedNoteCount = collectionArtifacts.reduce((sum, item) => sum + item.blockedNoteCount, 0);
+    const changesRequestedNoteCount = collectionArtifacts.reduce((sum, item) => sum + item.changesRequestedNoteCount, 0);
+    const overdueNoteCount = collectionArtifacts.reduce((sum, item) => sum + item.overdueNoteCount, 0);
     const reviewArtifactCount = collectionArtifacts.filter((item) => item.needsReview).length;
-    const blockedArtifactCount = collectionArtifacts.filter((item) => item.status === "blocked").length;
-    const riskArtifactCount = collectionArtifacts.filter((item) => item.riskNoteCount > 0).length;
+    const blockedArtifactCount = collectionArtifacts.filter((item) => item.status === "blocked" || item.reviewState === "blocked").length;
+    const riskArtifactCount = collectionArtifacts.filter((item) => item.riskNoteCount > 0 || item.reviewState === "changes-requested").length;
     const health = collectionHealth({
       blockedArtifactCount,
       riskArtifactCount,
@@ -891,6 +1024,9 @@ function buildCollections(configs, artifacts) {
       openNoteCount,
       riskNoteCount,
       actionNoteCount,
+      blockedNoteCount,
+      changesRequestedNoteCount,
+      overdueNoteCount,
       reviewArtifactCount,
       blockedArtifactCount,
       riskArtifactCount,
@@ -1099,7 +1235,73 @@ function commentsMarkdownLines(state) {
   return lines.length && lines.at(-1) === "" ? lines.slice(0, -1) : lines;
 }
 
+function normalizeNoteCategory(value) {
+  const category = String(value || "general").trim();
+  return category || "general";
+}
+
+function normalizeNoteReviewState(value, resolved, category) {
+  const reviewState = String(value || "").trim();
+  if (Object.hasOwn(NOTE_REVIEW_STATE_LABELS, reviewState)) {
+    return reviewState;
+  }
+  if (resolved) {
+    return "resolved";
+  }
+  if (normalizeNoteCategory(category) === "approval") {
+    return "approved";
+  }
+  return "open";
+}
+
+function normalizeSeverity(value, category, reviewState) {
+  const severity = String(value || "").trim();
+  if (Object.hasOwn(SEVERITY_LABELS, severity)) {
+    return severity;
+  }
+  if (reviewState === "blocked") {
+    return "blocker";
+  }
+  if (normalizeNoteCategory(category) === "risk") {
+    return "high";
+  }
+  if (normalizeNoteCategory(category) === "action" || normalizeNoteCategory(category) === "question") {
+    return "medium";
+  }
+  return "low";
+}
+
+function normalizeDueAt(value) {
+  return String(value || "").trim();
+}
+
+function highestNoteSeverity(notes) {
+  const rank = {
+    low: 1,
+    medium: 2,
+    high: 3,
+    blocker: 4
+  };
+  return notes.reduce((highest, note) => {
+    if (!highest || (rank[note.severity] || 0) > (rank[highest] || 0)) {
+      return note.severity || highest;
+    }
+    return highest;
+  }, "");
+}
+
+function isOverdue(dueAt) {
+  const date = normalizeDueAt(dueAt);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return false;
+  }
+  return date < new Date().toISOString().slice(0, 10);
+}
+
 function normalizeState(state) {
+  const notes = Array.isArray(state?.notes)
+    ? state.notes.map(normalizeNote).filter((item) => item.text)
+    : [];
   return {
     status: String(state?.status || "in-progress"),
     checkpoints: Array.isArray(state?.checkpoints)
@@ -1111,19 +1313,28 @@ function normalizeState(state) {
           note: String(item.note || "")
         })).filter((item) => item.id)
       : [],
-    notes: Array.isArray(state?.notes)
-      ? state.notes.map((item) => ({
-          id: String(item.id || `note-${Date.now()}`),
-          at: item.at || null,
-          text: String(item.text || ""),
-          author: String(item.author || ""),
-          category: String(item.category || "general"),
-          checkpointId: String(item.checkpointId || ""),
-          resolved: Boolean(item.resolved),
-          resolvedAt: item.resolvedAt || null
-        })).filter((item) => item.text)
-      : [],
+    notes,
     history: Array.isArray(state?.history) ? state.history : []
+  };
+}
+
+function normalizeNote(item) {
+  const category = normalizeNoteCategory(item?.category);
+  const resolved = Boolean(item?.resolved) || item?.reviewState === "resolved";
+  const reviewState = normalizeNoteReviewState(item?.reviewState, resolved, category);
+  return {
+    id: String(item?.id || `note-${Date.now()}`),
+    at: item?.at || null,
+    text: String(item?.text || ""),
+    author: String(item?.author || ""),
+    category,
+    checkpointId: String(item?.checkpointId || ""),
+    reviewState,
+    severity: normalizeSeverity(item?.severity, category, reviewState),
+    owner: String(item?.owner || ""),
+    dueAt: normalizeDueAt(item?.dueAt),
+    resolved,
+    resolvedAt: item?.resolvedAt || null
   };
 }
 

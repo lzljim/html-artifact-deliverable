@@ -134,6 +134,9 @@ describe("artifact server", () => {
     assert.equal(search.items[0].actionNoteCount, 1);
     assert.equal(search.items[0].latestOpenNote.category, "risk");
     assert.equal(search.items[0].reviewPriority, 4);
+    assert.equal(search.items[0].reviewState, "needs-review");
+    assert.equal(search.items[0].highestSeverity, "high");
+    assert.equal(search.items[0].checkpoints[0].review.reviewState, "needs-review");
     assert.equal(search.stats.openNotes, 2);
     assert.equal(search.stats.riskNotes, 1);
     assert.equal(search.stats.actionNotes, 1);
@@ -174,6 +177,88 @@ describe("artifact server", () => {
     assert.match(page.body, /id="noteFilter"/);
     assert.match(page.body, /导出全部/);
     assert.match(page.body, /checkpoint-note-save/);
+  });
+
+  it("normalizes review workflow fields and derives artifact plus checkpoint states", async () => {
+    await writeArtifact("workflow-plan", {
+      title: "Workflow Plan"
+    }, {
+      checkpoints: [
+        {
+          id: "stage-1",
+          title: "Stage 1",
+          done: false,
+          doneAt: null,
+          note: ""
+        },
+        {
+          id: "stage-2",
+          title: "Stage 2",
+          done: false,
+          doneAt: null,
+          note: ""
+        }
+      ],
+      notes: [
+        {
+          id: "approval-1",
+          at: "2026-05-17T00:00:00.000Z",
+          text: "Approved baseline.",
+          category: "approval",
+          resolved: false
+        },
+        {
+          id: "change-1",
+          at: "2026-05-17T01:00:00.000Z",
+          text: "Adjust the review copy.",
+          category: "action",
+          checkpointId: "stage-1",
+          reviewState: "changes-requested",
+          severity: "high",
+          owner: "Bob",
+          dueAt: "2026-01-01"
+        },
+        {
+          id: "question-1",
+          at: "2026-05-17T02:00:00.000Z",
+          text: "Confirm the edge case.",
+          category: "question",
+          checkpointId: "stage-2"
+        },
+        {
+          id: "resolved-risk",
+          at: "2026-05-17T03:00:00.000Z",
+          text: "Old risk.",
+          category: "risk",
+          resolved: true,
+          resolvedAt: "2026-05-17T04:00:00.000Z"
+        }
+      ]
+    });
+
+    const artifact = await injectJson({
+      method: "GET",
+      url: "/api/artifacts/workflow-plan"
+    });
+    assert.equal(artifact.openNoteCount, 2);
+    assert.equal(artifact.reviewState, "changes-requested");
+    assert.equal(artifact.reviewStateLabel, "需修改");
+    assert.equal(artifact.highestSeverity, "high");
+    assert.equal(artifact.overdueNoteCount, 1);
+    assert.equal(artifact.approvalNoteCount, 1);
+    assert.equal(artifact.latestOpenNote.owner, "Bob");
+    assert.equal(artifact.latestOpenNote.overdue, true);
+    assert.equal(artifact.checkpoints[0].review.reviewState, "changes-requested");
+    assert.equal(artifact.checkpoints[1].review.reviewState, "needs-review");
+
+    const state = await injectJson({
+      method: "GET",
+      url: "/api/artifacts/workflow-plan/state"
+    });
+    assert.equal(state.notes.find((item) => item.id === "approval-1").reviewState, "approved");
+    assert.equal(state.notes.find((item) => item.id === "question-1").reviewState, "open");
+    assert.equal(state.notes.find((item) => item.id === "question-1").severity, "medium");
+    assert.equal(state.notes.find((item) => item.id === "resolved-risk").reviewState, "resolved");
   });
 
   it("persists status, checkpoint notes, notes, and checkpoint toggles", async () => {
@@ -397,7 +482,7 @@ describe("artifact server", () => {
     assert.equal(collections[0].actionNoteCount, 1);
     assert.equal(collections[0].blockedArtifactCount, 1);
     assert.equal(collections[0].riskArtifactCount, 1);
-    assert.equal(collections[0].reviewArtifactCount, 1);
+    assert.equal(collections[0].reviewArtifactCount, 2);
     assert.equal(collections[0].healthStatus, "blocked");
     assert.equal(collections[0].healthLabel, "阻塞");
     assert.deepEqual(collections[0].artifacts.map((item) => item.id), ["plan-note", "research-note"]);
