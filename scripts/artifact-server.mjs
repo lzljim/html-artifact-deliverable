@@ -103,6 +103,8 @@ Routes:
   GET  /api/health
   GET  /api/artifacts
   GET  /api/artifacts/search
+  POST /api/artifacts
+  POST /api/artifacts/bulk
   GET  /api/export
   POST /api/import
   GET  /api/collections
@@ -113,6 +115,10 @@ Routes:
   GET  /api/artifacts/:id/export
   GET  /api/artifacts/:id/state
   PUT  /api/artifacts/:id/state
+  PATCH /api/artifacts/:id/status
+  PATCH /api/artifacts/:id/personal
+  POST /api/artifacts/:id/activity/opened
+  POST /api/artifacts/:id/checkpoints
   POST /api/artifacts/:id/checkpoints/:checkpointId/toggle
   POST /api/artifacts/:id/notes
   POST /api/artifacts/:id/notes/:noteId/resolve
@@ -379,6 +385,14 @@ function createStore(root) {
     return path.join(absoluteRoot, id);
   }
 
+  function artifactJsonPath(id) {
+    return path.join(artifactDir(id), "artifact.json");
+  }
+
+  function stateJsonPath(id) {
+    return path.join(artifactDir(id), "state.json");
+  }
+
   async function ensureRoot() {
     await fs.mkdir(absoluteRoot, {
       recursive: true
@@ -555,7 +569,74 @@ function createStore(root) {
   }
 
   async function getState(id) {
-    return normalizeState(await readJson(path.join(artifactDir(id), "state.json"), defaultState()));
+    return normalizeState(await readJson(stateJsonPath(id), defaultState()));
+  }
+
+  async function createArtifact(input = {}) {
+    await ensureRoot();
+    const title = String(input.title || "").trim();
+    if (!title) {
+      const error = new Error("Artifact title is required.");
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const id = String(input.id || `${new Date().toISOString().slice(0, 10)}-${slugify(title)}`).trim();
+    if (!isArtifactId(id)) {
+      const error = new Error(`Invalid artifact id: ${id}`);
+      error.statusCode = 400;
+      throw error;
+    }
+    const dir = artifactDir(id);
+    if (await fileExists(path.join(dir, "index.html"))) {
+      const error = new Error(`Artifact already exists: ${id}`);
+      error.statusCode = 409;
+      throw error;
+    }
+
+    const now = new Date().toISOString();
+    await fs.mkdir(dir, {
+      recursive: true
+    });
+    const checkpointTitle = String(input.checkpointTitle || "").trim();
+    const checkpoints = checkpointTitle
+      ? [{
+          id: uniqueCheckpointId([], slugify(checkpointTitle)),
+          title: checkpointTitle,
+          done: false,
+          doneAt: null,
+          note: ""
+        }]
+      : [];
+    const metadata = {
+      id,
+      title,
+      type: String(input.type || "implementation-plan"),
+      createdAt: now,
+      updatedAt: now,
+      entry: "index.html",
+      tags: [],
+      collection: normalizeArtifactCollection(input.collection)
+    };
+    const state = normalizeState({
+      status: "draft",
+      checkpoints,
+      notes: [],
+      personal: {
+        priority: "focus",
+        pinned: false,
+        snoozedUntil: "",
+        lastOpenedAt: null
+      },
+      history: [{
+        at: now,
+        type: "artifact.created"
+      }]
+    });
+    await writeJsonAtomic(artifactJsonPath(id), metadata);
+    await writeJsonAtomic(stateJsonPath(id), state);
+    await fs.writeFile(path.join(dir, "index.html"), defaultArtifactHtml(title), "utf8");
+    return normalizeArtifact(metadata, state, id);
   }
 
   async function getArtifactMarkdown(id) {
@@ -624,8 +705,77 @@ function createStore(root) {
 
   async function putState(id, state) {
     const normalized = normalizeState(state);
-    await writeJsonAtomic(path.join(artifactDir(id), "state.json"), normalized);
+    await writeJsonAtomic(stateJsonPath(id), normalized);
     return normalized;
+  }
+
+  async function updatePersonal(id, patch = {}) {
+    const state = await getState(id);
+    state.personal = normalizePersonal({
+      ...state.personal,
+      ...patch
+    });
+    state.history.push({
+      at: new Date().toISOString(),
+      type: "personal.updated"
+    });
+    return putState(id, state);
+  }
+
+  async function markOpened(id) {
+    const state = await getState(id);
+    state.personal = normalizePersonal({
+      ...state.personal,
+      lastOpenedAt: new Date().toISOString()
+    });
+    state.history.push({
+      at: state.personal.lastOpenedAt,
+      type: "artifact.opened"
+    });
+    return putState(id, state);
+  }
+
+  async function updateStatus(id, status) {
+    const state = await getState(id);
+    const nextStatus = String(status || "").trim();
+    if (!nextStatus || !Object.hasOwn(STATUS_LABELS, nextStatus)) {
+      const error = new Error("Valid artifact status is required.");
+      error.statusCode = 400;
+      throw error;
+    }
+    const previousStatus = state.status;
+    state.status = nextStatus;
+    state.history.push({
+      at: new Date().toISOString(),
+      type: "status.changed",
+      from: previousStatus,
+      to: nextStatus
+    });
+    return putState(id, state);
+  }
+
+  async function addCheckpoint(id, checkpoint) {
+    const state = await getState(id);
+    const title = String(checkpoint?.title || "").trim();
+    if (!title) {
+      const error = new Error("Checkpoint title is required.");
+      error.statusCode = 400;
+      throw error;
+    }
+    const item = {
+      id: uniqueCheckpointId(state.checkpoints, slugify(checkpoint.id || title)),
+      title,
+      done: false,
+      doneAt: null,
+      note: String(checkpoint?.note || "")
+    };
+    state.checkpoints.push(item);
+    state.history.push({
+      at: new Date().toISOString(),
+      type: "checkpoint.added",
+      checkpointId: item.id
+    });
+    return putState(id, state);
   }
 
   async function toggleCheckpoint(id, checkpointId) {
@@ -757,6 +907,53 @@ function createStore(root) {
     return state;
   }
 
+  async function bulkUpdateArtifacts(payload = {}) {
+    const ids = Array.isArray(payload.ids) ? payload.ids.map(String).filter(isArtifactId) : [];
+    const action = String(payload.action || "").trim();
+    if (!ids.length) {
+      const error = new Error("Artifact ids are required.");
+      error.statusCode = 400;
+      throw error;
+    }
+    const updated = [];
+    for (const id of ids) {
+      if (!(await getArtifact(id))) {
+        continue;
+      }
+      if (action === "archive") {
+        await updateStatus(id, "archived");
+        updated.push(id);
+      } else if (action === "unpin") {
+        await updatePersonal(id, {
+          pinned: false,
+          priority: "normal"
+        });
+        updated.push(id);
+      } else if (action === "collection") {
+        const metadata = await readJson(artifactJsonPath(id), {
+          id
+        });
+        metadata.collection = normalizeArtifactCollection(payload.collection);
+        if (!metadata.collection) {
+          const error = new Error("Collection is required.");
+          error.statusCode = 400;
+          throw error;
+        }
+        metadata.updatedAt = new Date().toISOString();
+        await writeJsonAtomic(artifactJsonPath(id), metadata);
+        updated.push(id);
+      } else {
+        const error = new Error("Unsupported bulk action.");
+        error.statusCode = 400;
+        throw error;
+      }
+    }
+    return {
+      updatedCount: updated.length,
+      ids: updated
+    };
+  }
+
   function getArtifactFileRoot(id) {
     return artifactDir(id);
   }
@@ -774,11 +971,17 @@ function createStore(root) {
     getArtifactBundle,
     getAllArtifactsBundle,
     importAllArtifactsBundle,
+    createArtifact,
     getState,
     putState,
+    updatePersonal,
+    markOpened,
+    updateStatus,
     toggleCheckpoint,
+    addCheckpoint,
     addNote,
     updateNote,
+    bulkUpdateArtifacts,
     setNoteResolved,
     getArtifactFileRoot
   };
@@ -789,6 +992,7 @@ function defaultState() {
     status: "in-progress",
     checkpoints: [],
     notes: [],
+    personal: defaultPersonal(),
     history: []
   };
 }
@@ -809,6 +1013,7 @@ function normalizeArtifact(metadata, state, fallbackId) {
     entry: metadata.entry || "index.html",
     tags: Array.isArray(metadata.tags) ? metadata.tags.map(String) : [],
     collection: normalizeArtifactCollection(metadata.collection),
+    personal: state.personal,
     status: state.status || "in-progress",
     statusLabel: statusLabel(state.status || "in-progress"),
     checkpointCount,
@@ -1354,6 +1559,60 @@ function normalizeDueAt(value) {
   return String(value || "").trim();
 }
 
+function defaultPersonal() {
+  return {
+    pinned: false,
+    priority: "normal",
+    snoozedUntil: "",
+    lastOpenedAt: null
+  };
+}
+
+function normalizePersonal(value) {
+  const priority = String(value?.priority || "normal");
+  return {
+    pinned: Boolean(value?.pinned),
+    priority: ["normal", "focus", "later"].includes(priority) ? priority : "normal",
+    snoozedUntil: normalizeDueAt(value?.snoozedUntil),
+    lastOpenedAt: value?.lastOpenedAt || null
+  };
+}
+
+function uniqueCheckpointId(checkpoints, preferred) {
+  const base = slugify(preferred || "checkpoint");
+  const existing = new Set((checkpoints || []).map((item) => item.id));
+  if (!existing.has(base)) {
+    return base;
+  }
+  let suffix = 2;
+  while (existing.has(`${base}-${suffix}`)) {
+    suffix += 1;
+  }
+  return `${base}-${suffix}`;
+}
+
+function defaultArtifactHtml(title) {
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${escapeHtml(title)}</title>
+  <style>
+    body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; line-height: 1.6; margin: 40px; color: #172033; }
+    main { max-width: 760px; margin: 0 auto; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>${escapeHtml(title)}</h1>
+    <p>这个 artifact 由工作台快速创建，可在右侧状态面板继续添加阶段和备注。</p>
+  </main>
+</body>
+</html>
+`;
+}
+
 function highestNoteSeverity(notes) {
   const rank = {
     low: 1,
@@ -1393,6 +1652,7 @@ function normalizeState(state) {
         })).filter((item) => item.id)
       : [],
     notes,
+    personal: normalizePersonal(state?.personal),
     history: Array.isArray(state?.history) ? state.history : []
   };
 }
@@ -1503,7 +1763,59 @@ function buildStats(artifacts) {
     cleanArtifacts: artifacts.filter((item) => item.reviewState === "clean").length,
     blockedOrRisk: artifacts.filter((item) => item.blockedOrRisk).length,
     recentUpdated: artifacts.filter((item) => Date.parse(item.updatedAt || item.lastNoteAt || "") >= recentSince
-      || Date.parse(item.lastNoteAt || "") >= recentSince).length
+      || Date.parse(item.lastNoteAt || "") >= recentSince).length,
+    personalSections: buildPersonalSections(artifacts),
+    organizeSections: buildOrganizeSections(artifacts)
+  };
+}
+
+function buildPersonalSections(artifacts) {
+  const active = artifacts.filter((item) => item.status !== "archived");
+  const byFocus = (left, right) => Number(Boolean(right.personal?.pinned)) - Number(Boolean(left.personal?.pinned))
+    || personalPriorityRank(right.personal?.priority) - personalPriorityRank(left.personal?.priority)
+    || String(right.updatedAt || "").localeCompare(String(left.updatedAt || ""));
+  const summarize = (items) => items.slice(0, 6).map((item) => ({
+    id: item.id,
+    title: item.title,
+    status: item.status,
+    statusLabel: item.statusLabel,
+    reviewStateLabel: item.reviewStateLabel,
+    progressPercent: item.progressPercent,
+    openNoteCount: item.openNoteCount,
+    personal: item.personal,
+    updatedAt: item.updatedAt
+  }));
+  return {
+    focus: summarize(active.filter((item) => item.personal?.pinned || item.personal?.priority === "focus").sort(byFocus)),
+    recent: summarize(active.slice().sort((left, right) => String(right.personal?.lastOpenedAt || right.updatedAt || "").localeCompare(String(left.personal?.lastOpenedAt || left.updatedAt || "")))),
+    blocked: summarize(active.filter((item) => item.status === "blocked" || item.blockedOrRisk || item.openNoteCount > 0).sort(compareArtifactsForReview)),
+    closing: summarize(active.filter((item) => item.status === "done" || (item.checkpointCount > 0 && item.doneCheckpointCount === item.checkpointCount)).sort(compareArtifacts("updated-desc")))
+  };
+}
+
+function personalPriorityRank(priority) {
+  const ranks = {
+    focus: 2,
+    normal: 1,
+    later: 0
+  };
+  return ranks[priority] ?? 1;
+}
+
+function buildOrganizeSections(artifacts) {
+  const active = artifacts.filter((item) => item.status !== "archived");
+  const staleSince = Date.now() - 14 * 24 * 60 * 60 * 1000;
+  const summarize = (items) => items.slice(0, 8).map((item) => ({
+    id: item.id,
+    title: item.title,
+    statusLabel: item.statusLabel,
+    updatedAt: item.updatedAt
+  }));
+  return {
+    stale: summarize(active.filter((item) => Date.parse(item.personal?.lastOpenedAt || item.updatedAt || "") < staleSince)),
+    doneOpen: summarize(active.filter((item) => item.status === "done")),
+    noCollection: summarize(active.filter((item) => !item.collection?.id)),
+    noCheckpoint: summarize(active.filter((item) => item.checkpointCount === 0))
   };
 }
 
@@ -1538,6 +1850,32 @@ function dashboardPage(root) {
       </header>
 
       <section id="stats" class="stats" aria-label="统计概览"></section>
+
+      <section class="quick-create" aria-label="快速新建">
+        <div class="section-head">
+          <div>
+            <h2>快速新建</h2>
+            <p>先记录下来，再逐步补阶段和备注。</p>
+          </div>
+        </div>
+        <form id="quickCreateForm" class="quick-create-form">
+          <input id="quickTitle" type="text" placeholder="标题" required>
+          <select id="quickType">
+            <option value="implementation-plan">实施计划</option>
+            <option value="research-report">调研报告</option>
+            <option value="architecture-explainer">架构说明</option>
+            <option value="code-review">代码评审</option>
+            <option value="html-artifact">HTML Artifact</option>
+          </select>
+          <input id="quickCollection" type="text" placeholder="项目集，可选">
+          <input id="quickCheckpoint" type="text" placeholder="初始阶段，可选">
+          <button type="submit">新建并打开</button>
+        </form>
+      </section>
+
+      <section id="personalHub" class="personal-hub" aria-label="个人任务中枢"></section>
+
+      <section id="organizeHub" class="personal-hub" aria-label="整理视图"></section>
 
       <section id="reviewDashboard" class="review-dashboard" aria-label="Review Dashboard"></section>
 
@@ -1594,6 +1932,13 @@ function dashboardPage(root) {
     <script>
       const elements = {
         stats: document.querySelector("#stats"),
+        personalHub: document.querySelector("#personalHub"),
+        organizeHub: document.querySelector("#organizeHub"),
+        quickCreateForm: document.querySelector("#quickCreateForm"),
+        quickTitle: document.querySelector("#quickTitle"),
+        quickType: document.querySelector("#quickType"),
+        quickCollection: document.querySelector("#quickCollection"),
+        quickCheckpoint: document.querySelector("#quickCheckpoint"),
         reviewDashboard: document.querySelector("#reviewDashboard"),
         collections: document.querySelector("#collections"),
         collectionMatrix: document.querySelector("#collectionMatrix"),
@@ -1692,6 +2037,92 @@ function dashboardPage(root) {
             <strong>\${escapeHtml(value)}</strong>
           </article>
         \`).join("");
+      }
+
+      function renderPersonalHub(stats) {
+        const sections = stats.personalSections || {};
+        const groups = [
+          ["focus", "当前重点", "置顶或 focus 的 artifact"],
+          ["recent", "最近继续", "按打开时间和更新时间排序"],
+          ["blocked", "阻塞/待处理", "阻塞、风险或未关闭事项"],
+          ["closing", "可收尾/可归档", "已完成或阶段已全部完成"]
+        ];
+        elements.personalHub.innerHTML = \`
+          <div class="section-head">
+            <div>
+              <h2>个人任务中枢</h2>
+              <p>先处理重点，再补最近继续和收尾整理。</p>
+            </div>
+          </div>
+          <div class="personal-grid">
+            \${groups.map(([key, title, hint]) => renderPersonalGroup(title, hint, sections[key] || [])).join("")}
+          </div>
+        \`;
+      }
+
+      function renderPersonalGroup(title, hint, items) {
+        const body = items.length
+          ? items.map((item) => \`
+              <a class="personal-item" href="\${withAuthPath("/artifacts/" + encodeURIComponent(item.id))}">
+                <strong>\${escapeHtml(item.title)}</strong>
+                <span>\${escapeHtml(item.statusLabel)} · \${escapeHtml(item.reviewStateLabel || "无未解决项")}</span>
+              </a>
+            \`).join("")
+          : '<div class="empty compact">暂无</div>';
+        return \`
+          <article class="personal-group">
+            <header>
+              <h3>\${escapeHtml(title)}</h3>
+              <span>\${escapeHtml(hint)}</span>
+            </header>
+            \${body}
+          </article>
+        \`;
+      }
+
+      function renderOrganizeHub(stats) {
+        const sections = stats.organizeSections || {};
+        const groups = [
+          ["doneOpen", "已完成未归档", "可批量归档", "archive"],
+          ["stale", "较久未继续", "超过 14 天未打开或更新", ""],
+          ["noCollection", "未归入项目集", "可批量加入项目集", "collection"],
+          ["noCheckpoint", "无阶段", "适合补初始阶段", ""]
+        ];
+        elements.organizeHub.innerHTML = \`
+          <div class="section-head">
+            <div>
+              <h2>整理视图</h2>
+              <p>清理已完成、长期未动和缺少归类的 artifact。</p>
+            </div>
+          </div>
+          <div class="personal-grid">
+            \${groups.map(([key, title, hint, action]) => renderOrganizeGroup(key, title, hint, action, sections[key] || [])).join("")}
+          </div>
+        \`;
+      }
+
+      function renderOrganizeGroup(key, title, hint, action, items) {
+        const body = items.length
+          ? items.map((item) => \`
+              <label class="organize-item">
+                <input type="checkbox" value="\${escapeHtml(item.id)}" data-organize-key="\${escapeHtml(key)}">
+                <span>\${escapeHtml(item.title)}</span>
+              </label>
+            \`).join("")
+          : '<div class="empty compact">暂无</div>';
+        const button = action
+          ? '<button type="button" data-bulk-action="' + escapeHtml(action) + '" data-organize-key="' + escapeHtml(key) + '">' + (action === "archive" ? "归档选中" : "加入项目集") + '</button>'
+          : "";
+        return \`
+          <article class="personal-group">
+            <header>
+              <h3>\${escapeHtml(title)}</h3>
+              <span>\${escapeHtml(hint)}</span>
+            </header>
+            \${body}
+            \${button}
+          </article>
+        \`;
       }
 
       function renderReviewDashboard(stats) {
@@ -2082,6 +2513,14 @@ function dashboardPage(root) {
               <span class="status" data-status="\${escapeHtml(artifact.status)}">\${escapeHtml(artifact.statusLabel)}</span>
               <span class="health" data-health="\${escapeHtml(reviewStateTone(artifact.reviewState))}">\${escapeHtml(artifact.reviewStateLabel || "无未解决项")}</span>
               <small>\${escapeHtml(artifact.id)}</small>
+              <div class="quick-actions">
+                <button type="button" data-personal-action="pin" data-artifact-id="\${escapeHtml(artifact.id)}">\${artifact.personal?.pinned ? "取消置顶" : "置顶"}</button>
+                <button type="button" data-personal-action="later" data-artifact-id="\${escapeHtml(artifact.id)}">稍后</button>
+                <button type="button" data-status-action="done" data-artifact-id="\${escapeHtml(artifact.id)}">完成</button>
+                <button type="button" data-status-action="archived" data-artifact-id="\${escapeHtml(artifact.id)}">归档</button>
+                <button type="button" data-card-action="note" data-artifact-id="\${escapeHtml(artifact.id)}">备注</button>
+                <button type="button" data-card-action="checkpoint" data-artifact-id="\${escapeHtml(artifact.id)}">阶段</button>
+              </div>
             </div>
           </article>
         \`;
@@ -2119,6 +2558,8 @@ function dashboardPage(root) {
         searchResult = await response.json();
         renderCollections(collectionResult);
         renderStats(searchResult.stats);
+        renderPersonalHub(searchResult.stats);
+        renderOrganizeHub(searchResult.stats);
         renderReviewDashboard(searchResult.stats);
         if (!preserveFacets) {
           renderFacets(searchResult.facets);
@@ -2162,6 +2603,67 @@ function dashboardPage(root) {
         }
       }
 
+      async function patchPersonal(id, patch) {
+        await fetch(withAuthPath("/api/artifacts/" + encodeURIComponent(id) + "/personal"), {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify(patch)
+        }).then(assertOk);
+      }
+
+      async function patchStatus(id, status) {
+        await fetch(withAuthPath("/api/artifacts/" + encodeURIComponent(id) + "/status"), {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({ status })
+        }).then(assertOk);
+      }
+
+      async function addCardNote(id) {
+        const text = window.prompt("快速备注");
+        if (!text || !text.trim()) {
+          return;
+        }
+        await fetch(withAuthPath("/api/artifacts/" + encodeURIComponent(id) + "/notes"), {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            text: text.trim(),
+            category: "general",
+            reviewState: "open",
+            severity: "low"
+          })
+        }).then(assertOk);
+      }
+
+      async function addCardCheckpoint(id) {
+        const title = window.prompt("新增阶段");
+        if (!title || !title.trim()) {
+          return;
+        }
+        await fetch(withAuthPath("/api/artifacts/" + encodeURIComponent(id) + "/checkpoints"), {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({ title: title.trim() })
+        }).then(assertOk);
+      }
+
+      async function assertOk(response) {
+        if (!response.ok) {
+          const data = await response.json().catch(() => ({}));
+          throw new Error(data.error || "请求失败。");
+        }
+        return response;
+      }
+
       function scheduleLoad() {
         clearTimeout(debounceTimer);
         debounceTimer = setTimeout(() => {
@@ -2184,6 +2686,27 @@ function dashboardPage(root) {
       });
       elements.importFile.addEventListener("change", () => {
         importBundleFile(elements.importFile.files?.[0]).catch(renderError);
+      });
+      elements.quickCreateForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        try {
+          const response = await fetch(withAuthPath("/api/artifacts"), {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              title: elements.quickTitle.value.trim(),
+              type: elements.quickType.value,
+              collection: elements.quickCollection.value.trim(),
+              checkpointTitle: elements.quickCheckpoint.value.trim()
+            })
+          }).then(assertOk);
+          const artifact = await response.json();
+          location.href = withAuthPath("/artifacts/" + encodeURIComponent(artifact.id));
+        } catch (error) {
+          elements.resultSummary.textContent = "新建失败：" + error.message;
+        }
       });
       elements.reviewDashboard.addEventListener("click", (event) => {
         const target = event.target.closest("button");
@@ -2238,6 +2761,84 @@ function dashboardPage(root) {
         collectionSort = target.value;
         renderCollections(collectionResult);
       });
+      elements.organizeHub.addEventListener("click", async (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLButtonElement) || !target.dataset.bulkAction) {
+          return;
+        }
+        const ids = [...elements.organizeHub.querySelectorAll('input[data-organize-key="' + CSS.escape(target.dataset.organizeKey) + '"]:checked')]
+          .map((item) => item.value);
+        if (!ids.length) {
+          elements.resultSummary.textContent = "请先选择要整理的 artifact。";
+          return;
+        }
+        const payload = {
+          ids,
+          action: target.dataset.bulkAction
+        };
+        if (payload.action === "collection") {
+          const collection = window.prompt("项目集名称");
+          if (!collection || !collection.trim()) {
+            return;
+          }
+          payload.collection = collection.trim();
+        }
+        target.disabled = true;
+        try {
+          await fetch(withAuthPath("/api/artifacts/bulk"), {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify(payload)
+          }).then(assertOk);
+          await load({ preserveFacets: true });
+        } catch (error) {
+          elements.resultSummary.textContent = "整理失败：" + error.message;
+        } finally {
+          target.disabled = false;
+        }
+      });
+      elements.list.addEventListener("click", async (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLButtonElement)) {
+          return;
+        }
+        const id = target.dataset.artifactId;
+        if (!id) {
+          return;
+        }
+        target.disabled = true;
+        try {
+          if (target.dataset.personalAction === "pin") {
+            const artifact = searchResult.items.find((item) => item.id === id);
+            await patchPersonal(id, {
+              pinned: !artifact?.personal?.pinned,
+              priority: artifact?.personal?.pinned ? "normal" : "focus"
+            });
+          } else if (target.dataset.personalAction === "later") {
+            const date = window.prompt("稍后到哪天？YYYY-MM-DD，可留空", "");
+            await patchPersonal(id, {
+              priority: "later",
+              pinned: false,
+              snoozedUntil: date || ""
+            });
+          } else if (target.dataset.statusAction) {
+            await patchStatus(id, target.dataset.statusAction);
+          } else if (target.dataset.cardAction === "note") {
+            await addCardNote(id);
+          } else if (target.dataset.cardAction === "checkpoint") {
+            await addCardCheckpoint(id);
+          } else {
+            return;
+          }
+          await load({ preserveFacets: true });
+        } catch (error) {
+          elements.resultSummary.textContent = "操作失败：" + error.message;
+        } finally {
+          target.disabled = false;
+        }
+      });
       load().catch(renderError);
     </script>
   `);
@@ -2279,6 +2880,10 @@ function artifactPage(artifact, pageToken = "", readOnly = false) {
         </section>
         <section>
           <h3>评论</h3>
+          <form id="quickNoteForm" class="quick-note-form">
+            <textarea id="quickNoteText" rows="2" placeholder="快速备注" data-write-control></textarea>
+            <button type="submit" data-write-control>追加备注</button>
+          </form>
           <form id="noteForm">
             <div class="note-fields">
               <input id="noteAuthor" type="text" placeholder="作者" data-write-control>
@@ -2341,6 +2946,8 @@ function artifactPage(artifact, pageToken = "", readOnly = false) {
       const statusSelect = document.querySelector("#statusSelect");
       const stateFeedback = document.querySelector("#stateFeedback");
       const noteForm = document.querySelector("#noteForm");
+      const quickNoteForm = document.querySelector("#quickNoteForm");
+      const quickNoteText = document.querySelector("#quickNoteText");
       const noteAuthor = document.querySelector("#noteAuthor");
       const noteCategory = document.querySelector("#noteCategory");
       const noteReviewState = document.querySelector("#noteReviewState");
@@ -2575,6 +3182,20 @@ function artifactPage(artifact, pageToken = "", readOnly = false) {
         setFeedback("");
       }
 
+      async function recordOpened() {
+        if (readOnly) {
+          return;
+        }
+        try {
+          state = await fetchJson(\`/api/artifacts/\${encodeURIComponent(artifactId)}/activity/opened\`, {
+            method: "POST"
+          });
+          renderState();
+        } catch {
+          // 打开记录只是个人工作台排序信号，失败不阻断详情页使用。
+        }
+      }
+
       async function saveState(nextState, successMessage) {
         state = await fetchJson(\`/api/artifacts/\${encodeURIComponent(artifactId)}/state\`, {
           method: "PUT",
@@ -2704,6 +3325,37 @@ function artifactPage(artifact, pageToken = "", readOnly = false) {
           setFeedback(error.message, "error");
         } finally {
           statusSelect.disabled = false;
+        }
+      });
+
+      quickNoteForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        if (readOnly) {
+          setFeedback("只读模式下不能新增备注。", "error");
+          return;
+        }
+        const text = quickNoteText.value.trim();
+        if (!text) {
+          return;
+        }
+        try {
+          state = await fetchJson(\`/api/artifacts/\${encodeURIComponent(artifactId)}/notes\`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              text,
+              category: "general",
+              reviewState: "open",
+              severity: "low"
+            })
+          });
+          quickNoteText.value = "";
+          renderState();
+          setFeedback("备注已追加。");
+        } catch (error) {
+          setFeedback(error.message, "error");
         }
       });
 
@@ -2902,7 +3554,9 @@ function artifactPage(artifact, pageToken = "", readOnly = false) {
       });
 
       renderStatusOptions();
-      loadState().catch(renderLoadError);
+      loadState()
+        .then(recordOpened)
+        .catch(renderLoadError);
     </script>
   `);
 }
@@ -3056,6 +3710,72 @@ function pageShell(title, body) {
       margin-top: 5px;
       font-size: 24px;
       line-height: 1.1;
+    }
+    .quick-create,
+    .personal-hub {
+      margin-bottom: 14px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+      padding: 12px;
+    }
+    .quick-create-form {
+      display: grid;
+      grid-template-columns: minmax(180px, 1fr) 160px minmax(150px, 0.8fr) minmax(150px, 0.8fr) auto;
+      gap: 8px;
+    }
+    .personal-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .personal-group {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px;
+      background: var(--panel-soft);
+    }
+    .personal-group header {
+      display: grid;
+      gap: 2px;
+      margin-bottom: 8px;
+    }
+    .personal-group h3 {
+      margin: 0;
+      font-size: 15px;
+    }
+    .personal-group header span,
+    .personal-item span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .personal-item {
+      display: grid;
+      gap: 2px;
+      border-top: 1px solid var(--border);
+      color: var(--text);
+      padding: 8px 0;
+      text-decoration: none;
+    }
+    .personal-item:first-of-type {
+      border-top: 0;
+    }
+    .organize-item {
+      display: grid;
+      grid-template-columns: 18px minmax(0, 1fr);
+      gap: 6px;
+      align-items: start;
+      border-top: 1px solid var(--border);
+      padding: 7px 0;
+      font-size: 13px;
+    }
+    .organize-item span {
+      overflow-wrap: anywhere;
+    }
+    .personal-group button {
+      width: 100%;
+      margin-top: 8px;
+      font-size: 13px;
     }
     .collections {
       margin-bottom: 14px;
@@ -3471,6 +4191,18 @@ function pageShell(title, body) {
       color: var(--muted);
       font-size: 12px;
     }
+    .quick-actions {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 4px;
+      max-width: 260px;
+    }
+    .quick-actions button {
+      min-height: 28px;
+      padding: 3px 7px;
+      font-size: 12px;
+    }
     .status {
       display: inline-flex;
       align-items: center;
@@ -3680,6 +4412,12 @@ function pageShell(title, body) {
       display: grid;
       gap: 8px;
     }
+    .quick-note-form {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
     .note-fields {
       display: grid;
       grid-template-columns: minmax(0, 1fr) 112px;
@@ -3699,7 +4437,11 @@ function pageShell(title, body) {
     @media (max-width: 980px) {
       .stats,
       .review-cards,
+      .personal-grid,
       .filters {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+      .quick-create-form {
         grid-template-columns: repeat(2, minmax(0, 1fr));
       }
       .collection-list {
@@ -3730,6 +4472,8 @@ function pageShell(title, body) {
       .filters,
       .review-cards,
       .stats,
+      .personal-grid,
+      .quick-create-form,
       .collection-card {
         grid-template-columns: 1fr;
       }
@@ -3866,6 +4610,14 @@ async function createApp(store, options = {}) {
     return store.searchArtifacts(getSearchFilters(request.query));
   });
 
+  app.post("/api/artifacts", async (request) => {
+    return store.createArtifact(request.body);
+  });
+
+  app.post("/api/artifacts/bulk", async (request) => {
+    return store.bulkUpdateArtifacts(request.body);
+  });
+
   app.get("/api/export", async (request, reply) => {
     const bundle = await store.getAllArtifactsBundle();
     const date = new Date().toISOString().slice(0, 10);
@@ -3950,6 +4702,42 @@ async function createApp(store, options = {}) {
       });
     }
     return store.putState(request.params.id, request.body);
+  });
+
+  app.patch("/api/artifacts/:id/status", async (request, reply) => {
+    if (!(await store.getArtifact(request.params.id))) {
+      return reply.code(404).send({
+        error: "Artifact not found."
+      });
+    }
+    return store.updateStatus(request.params.id, request.body?.status);
+  });
+
+  app.patch("/api/artifacts/:id/personal", async (request, reply) => {
+    if (!(await store.getArtifact(request.params.id))) {
+      return reply.code(404).send({
+        error: "Artifact not found."
+      });
+    }
+    return store.updatePersonal(request.params.id, request.body);
+  });
+
+  app.post("/api/artifacts/:id/activity/opened", async (request, reply) => {
+    if (!(await store.getArtifact(request.params.id))) {
+      return reply.code(404).send({
+        error: "Artifact not found."
+      });
+    }
+    return store.markOpened(request.params.id);
+  });
+
+  app.post("/api/artifacts/:id/checkpoints", async (request, reply) => {
+    if (!(await store.getArtifact(request.params.id))) {
+      return reply.code(404).send({
+        error: "Artifact not found."
+      });
+    }
+    return store.addCheckpoint(request.params.id, request.body);
   });
 
   app.post("/api/artifacts/:id/checkpoints/:checkpointId/toggle", async (request, reply) => {

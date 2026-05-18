@@ -154,6 +154,10 @@ describe("artifact server", () => {
     });
     assert.equal(dashboard.statusCode, 200);
     assert.match(dashboard.body, /Review Dashboard/);
+    assert.match(dashboard.body, /id="personalHub"/);
+    assert.match(dashboard.body, /id="quickCreateForm"/);
+    assert.match(dashboard.body, /id="organizeHub"/);
+    assert.match(dashboard.body, /data-personal-action="pin"/);
     assert.match(dashboard.body, /data-review-filter=/);
     assert.match(dashboard.body, /待办 \/ Review 队列/);
     assert.match(dashboard.body, /暂无待办或未解决 review 项/);
@@ -175,6 +179,7 @@ describe("artifact server", () => {
     assert.match(page.body, /id="copyMarkdown"/);
     assert.match(page.body, /id="copyComments"/);
     assert.match(page.body, /id="noteFilter"/);
+    assert.match(page.body, /id="quickNoteForm"/);
     assert.match(page.body, /id="noteReviewState"/);
     assert.match(page.body, /data-note-action="update"/);
     assert.match(page.body, /导出全部/);
@@ -383,6 +388,127 @@ describe("artifact server", () => {
     assert.equal(diskState.notes[0].author, "Alice");
     assert.equal(diskState.notes[0].checkpointId, "stage-1");
     assert.equal(diskState.notes[0].reviewState, "changes-requested");
+  });
+
+  it("supports personal task hub state, quick create, opened activity, and organizing actions", async () => {
+    const created = await injectJson({
+      method: "POST",
+      url: "/api/artifacts",
+      headers: {
+        "content-type": "application/json"
+      },
+      payload: {
+        id: "personal-plan",
+        title: "Personal Plan",
+        type: "implementation-plan",
+        collection: "personal-work",
+        checkpointTitle: "First Step"
+      }
+    });
+    assert.equal(created.id, "personal-plan");
+    assert.equal(created.status, "draft");
+    assert.equal(created.checkpointCount, 1);
+    assert.equal(created.personal.priority, "focus");
+
+    const duplicate = await injectJson({
+      method: "POST",
+      url: "/api/artifacts",
+      headers: {
+        "content-type": "application/json"
+      },
+      payload: {
+        id: "personal-plan",
+        title: "Personal Plan"
+      },
+      expectedStatus: 409
+    });
+    assert.match(duplicate.error, /already exists/);
+
+    const personal = await injectJson({
+      method: "PATCH",
+      url: "/api/artifacts/personal-plan/personal",
+      headers: {
+        "content-type": "application/json"
+      },
+      payload: {
+        pinned: true,
+        priority: "later",
+        snoozedUntil: "2026-05-20"
+      }
+    });
+    assert.equal(personal.personal.pinned, true);
+    assert.equal(personal.personal.priority, "later");
+    assert.equal(personal.personal.snoozedUntil, "2026-05-20");
+
+    const opened = await injectJson({
+      method: "POST",
+      url: "/api/artifacts/personal-plan/activity/opened"
+    });
+    assert.ok(opened.personal.lastOpenedAt);
+    assert.equal(opened.history.at(-1).type, "artifact.opened");
+
+    const withCheckpoint = await injectJson({
+      method: "POST",
+      url: "/api/artifacts/personal-plan/checkpoints",
+      headers: {
+        "content-type": "application/json"
+      },
+      payload: {
+        title: "Follow Up"
+      }
+    });
+    assert.equal(withCheckpoint.checkpoints.length, 2);
+    assert.equal(withCheckpoint.history.at(-1).type, "checkpoint.added");
+
+    const done = await injectJson({
+      method: "PATCH",
+      url: "/api/artifacts/personal-plan/status",
+      headers: {
+        "content-type": "application/json"
+      },
+      payload: {
+        status: "done"
+      }
+    });
+    assert.equal(done.status, "done");
+
+    const unpinned = await injectJson({
+      method: "POST",
+      url: "/api/artifacts/bulk",
+      headers: {
+        "content-type": "application/json"
+      },
+      payload: {
+        ids: ["personal-plan"],
+        action: "unpin"
+      }
+    });
+    assert.equal(unpinned.updatedCount, 1);
+
+    const archived = await injectJson({
+      method: "POST",
+      url: "/api/artifacts/bulk",
+      headers: {
+        "content-type": "application/json"
+      },
+      payload: {
+        ids: ["personal-plan"],
+        action: "archive"
+      }
+    });
+    assert.equal(archived.updatedCount, 1);
+
+    const direct = await injectJson({
+      method: "GET",
+      url: "/api/artifacts/personal-plan"
+    });
+    assert.equal(direct.status, "archived");
+
+    const bundle = await injectJson({
+      method: "GET",
+      url: "/api/export"
+    });
+    assert.equal(bundle.artifacts.find((item) => item.id === "personal-plan").state.status, "archived");
   });
 
   it("keeps current work ahead of done artifacts while sorting inside status groups", async () => {
