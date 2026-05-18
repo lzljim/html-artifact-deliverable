@@ -158,6 +158,10 @@ describe("artifact server", () => {
     assert.match(dashboard.body, /id="collectionSort"/);
     assert.match(dashboard.body, /导出全部/);
     assert.match(dashboard.body, /导入全部/);
+    assert.ok(
+      dashboard.body.indexOf('id="list"') < dashboard.body.indexOf('id="collectionMatrix"'),
+      "collection progress matrix should render after the artifact list slot"
+    );
 
     const page = await app.inject({
       method: "GET",

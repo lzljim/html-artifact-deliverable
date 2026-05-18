@@ -1291,12 +1291,15 @@ function dashboardPage(root) {
       </section>
 
       <section id="list" class="artifact-groups" aria-live="polite"></section>
+
+      <section id="collectionMatrix" class="collection-matrix-slot" aria-label="项目集进度矩阵"></section>
     </main>
     <script>
       const elements = {
         stats: document.querySelector("#stats"),
         reviewDashboard: document.querySelector("#reviewDashboard"),
         collections: document.querySelector("#collections"),
+        collectionMatrix: document.querySelector("#collectionMatrix"),
         list: document.querySelector("#list"),
         query: document.querySelector("#query"),
         status: document.querySelector("#status"),
@@ -1530,6 +1533,7 @@ function dashboardPage(root) {
         collectionResult = sortCollections(collections || []);
         if (!collectionResult.length) {
           elements.collections.innerHTML = "";
+          elements.collectionMatrix.innerHTML = "";
           return;
         }
         elements.collections.innerHTML = \`
@@ -1555,8 +1559,8 @@ function dashboardPage(root) {
           <div class="collection-list">
             \${collectionResult.map(renderCollectionCard).join("")}
           </div>
-          \${renderCollectionMatrix(collectionResult)}
         \`;
+        renderCollectionMatrix(collectionResult);
       }
 
       function renderCollectionCard(collection) {
@@ -1593,9 +1597,10 @@ function dashboardPage(root) {
       function renderCollectionMatrix(collections) {
         const rows = collections.flatMap((collection) => collection.artifacts.map((artifact) => renderCollectionMatrixRow(collection, artifact)));
         if (!rows.length) {
-          return "";
+          elements.collectionMatrix.innerHTML = "";
+          return;
         }
-        return \`
+        elements.collectionMatrix.innerHTML = \`
           <div class="collection-matrix" aria-label="项目集进度矩阵">
             <div class="matrix-title">
               <h3>项目集进度矩阵</h3>
