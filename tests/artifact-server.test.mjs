@@ -158,6 +158,7 @@ describe("artifact server", () => {
     assert.match(dashboard.body, /id="quickCreateForm"/);
     assert.match(dashboard.body, /id="organizeHub"/);
     assert.match(dashboard.body, /data-organize-collection/);
+    assert.match(dashboard.body, /data-organize-new-collection/);
     assert.match(dashboard.body, /data-personal-action="pin"/);
     assert.match(dashboard.body, /data-review-filter=/);
     assert.match(dashboard.body, /待办 \/ Review 队列/);
@@ -447,6 +448,28 @@ describe("artifact server", () => {
       id: "personal-work",
       title: "personal-work"
     });
+
+    await writeArtifact("new-collection-plan", {
+      title: "New Collection Plan"
+    });
+    const newCollection = await injectJson({
+      method: "POST",
+      url: "/api/artifacts/bulk",
+      headers: {
+        "content-type": "application/json"
+      },
+      payload: {
+        ids: ["new-collection-plan"],
+        action: "collection",
+        collection: "Fresh Work"
+      }
+    });
+    assert.equal(newCollection.updatedCount, 1);
+    const collections = await injectJson({
+      method: "GET",
+      url: "/api/collections"
+    });
+    assert.ok(collections.some((item) => item.id === "fresh-work" && item.artifactCount === 1));
 
     const personal = await injectJson({
       method: "PATCH",

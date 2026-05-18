@@ -2163,7 +2163,7 @@ function dashboardPage(root) {
           ? renderOrganizeCollectionSelect(key)
           : "";
         const button = action
-          ? '<button type="button" data-bulk-action="' + escapeHtml(action) + '" data-organize-key="' + escapeHtml(key) + '"' + (action === "collection" && !collectionResult.length ? " disabled" : "") + '>' + (action === "archive" ? "归档选中" : "加入项目集") + '</button>'
+          ? '<button type="button" data-bulk-action="' + escapeHtml(action) + '" data-organize-key="' + escapeHtml(key) + '">' + (action === "archive" ? "归档选中" : "加入项目集") + '</button>'
           : "";
         return \`
           <article class="personal-group">
@@ -2185,7 +2185,10 @@ function dashboardPage(root) {
               ...collectionResult.map((collection) => '<option value="' + escapeHtml(collection.id) + '">' + escapeHtml(collection.title || collection.id) + '</option>')
             ].join("")
           : '<option value="">暂无项目集</option>';
-        return '<select data-organize-collection="' + escapeHtml(key) + '" aria-label="选择项目集" ' + (!collectionResult.length ? "disabled" : "") + '>' + options + '</select>';
+        return [
+          '<select data-organize-collection="' + escapeHtml(key) + '" aria-label="选择项目集" ' + (!collectionResult.length ? "disabled" : "") + '>' + options + '</select>',
+          '<input type="text" data-organize-new-collection="' + escapeHtml(key) + '" placeholder="新项目集名称" aria-label="新项目集名称">'
+        ].join("");
       }
 
       function renderReviewDashboard(stats) {
@@ -2864,9 +2867,12 @@ function dashboardPage(root) {
         };
         if (payload.action === "collection") {
           const collectionSelect = elements.organizeHub.querySelector('select[data-organize-collection="' + CSS.escape(target.dataset.organizeKey) + '"]');
-          const collection = collectionSelect instanceof HTMLSelectElement ? collectionSelect.value : "";
+          const collectionInput = elements.organizeHub.querySelector('input[data-organize-new-collection="' + CSS.escape(target.dataset.organizeKey) + '"]');
+          const newCollection = collectionInput instanceof HTMLInputElement ? collectionInput.value.trim() : "";
+          const selectedCollection = collectionSelect instanceof HTMLSelectElement ? collectionSelect.value : "";
+          const collection = newCollection || selectedCollection;
           if (!collection) {
-            elements.resultSummary.textContent = "请选择要加入的项目集。";
+            elements.resultSummary.textContent = "请选择已有项目集，或输入新项目集名称。";
             return;
           }
           payload.collection = collection;
