@@ -157,6 +157,7 @@ describe("artifact server", () => {
     assert.match(dashboard.body, /id="personalHub"/);
     assert.match(dashboard.body, /id="quickCreateForm"/);
     assert.match(dashboard.body, /id="organizeHub"/);
+    assert.match(dashboard.body, /data-organize-collection/);
     assert.match(dashboard.body, /data-personal-action="pin"/);
     assert.match(dashboard.body, /data-review-filter=/);
     assert.match(dashboard.body, /待办 \/ Review 队列/);
@@ -423,6 +424,28 @@ describe("artifact server", () => {
       expectedStatus: 409
     });
     assert.match(duplicate.error, /already exists/);
+
+    await writeArtifact("loose-plan", {
+      title: "Loose Plan"
+    });
+    const collected = await injectJson({
+      method: "POST",
+      url: "/api/artifacts/bulk",
+      headers: {
+        "content-type": "application/json"
+      },
+      payload: {
+        ids: ["loose-plan"],
+        action: "collection",
+        collection: "personal-work"
+      }
+    });
+    assert.equal(collected.updatedCount, 1);
+    const looseMetadata = JSON.parse(await fs.readFile(path.join(tempRoot, "loose-plan", "artifact.json"), "utf8"));
+    assert.deepEqual(looseMetadata.collection, {
+      id: "personal-work",
+      title: "personal-work"
+    });
 
     const personal = await injectJson({
       method: "PATCH",

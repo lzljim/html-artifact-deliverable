@@ -2110,8 +2110,11 @@ function dashboardPage(root) {
               </label>
             \`).join("")
           : '<div class="empty compact">暂无</div>';
+        const collectionSelect = action === "collection"
+          ? renderOrganizeCollectionSelect(key)
+          : "";
         const button = action
-          ? '<button type="button" data-bulk-action="' + escapeHtml(action) + '" data-organize-key="' + escapeHtml(key) + '">' + (action === "archive" ? "归档选中" : "加入项目集") + '</button>'
+          ? '<button type="button" data-bulk-action="' + escapeHtml(action) + '" data-organize-key="' + escapeHtml(key) + '"' + (action === "collection" && !collectionResult.length ? " disabled" : "") + '>' + (action === "archive" ? "归档选中" : "加入项目集") + '</button>'
           : "";
         return \`
           <article class="personal-group">
@@ -2120,9 +2123,20 @@ function dashboardPage(root) {
               <span>\${escapeHtml(hint)}</span>
             </header>
             \${body}
+            \${collectionSelect}
             \${button}
           </article>
         \`;
+      }
+
+      function renderOrganizeCollectionSelect(key) {
+        const options = collectionResult.length
+          ? [
+              '<option value="">选择项目集</option>',
+              ...collectionResult.map((collection) => '<option value="' + escapeHtml(collection.id) + '">' + escapeHtml(collection.title || collection.id) + '</option>')
+            ].join("")
+          : '<option value="">暂无项目集</option>';
+        return '<select data-organize-collection="' + escapeHtml(key) + '" aria-label="选择项目集" ' + (!collectionResult.length ? "disabled" : "") + '>' + options + '</select>';
       }
 
       function renderReviewDashboard(stats) {
@@ -2777,11 +2791,13 @@ function dashboardPage(root) {
           action: target.dataset.bulkAction
         };
         if (payload.action === "collection") {
-          const collection = window.prompt("项目集名称");
-          if (!collection || !collection.trim()) {
+          const collectionSelect = elements.organizeHub.querySelector('select[data-organize-collection="' + CSS.escape(target.dataset.organizeKey) + '"]');
+          const collection = collectionSelect instanceof HTMLSelectElement ? collectionSelect.value : "";
+          if (!collection) {
+            elements.resultSummary.textContent = "请选择要加入的项目集。";
             return;
           }
-          payload.collection = collection.trim();
+          payload.collection = collection;
         }
         target.disabled = true;
         try {
