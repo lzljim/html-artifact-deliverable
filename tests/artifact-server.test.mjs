@@ -158,6 +158,9 @@ describe("artifact server", () => {
     assert.match(dashboard.body, /id="personalHub"/);
     assert.match(dashboard.body, /id="quickCreateForm"/);
     assert.match(dashboard.body, /id="organizeHub"/);
+    assert.match(dashboard.body, /id="reportCenter"/);
+    assert.match(dashboard.body, /报告中心/);
+    assert.match(dashboard.body, /data-report-kind="weekly"/);
     assert.match(dashboard.body, /data-organize-collection/);
     assert.match(dashboard.body, /data-organize-new-collection/);
     assert.match(dashboard.body, /data-personal-action="pin"/);
@@ -795,6 +798,43 @@ describe("artifact server", () => {
     assert.match(reviewMarkdown.body, /# Metadata Upgrade Review 摘要/);
     assert.match(reviewMarkdown.body, /- 待办：1/);
     assert.match(reviewMarkdown.body, /最近待处理：待处理 \/ 高 \/ 风险：Risk needs mitigation\./);
+
+    const weeklyReport = await app.inject({
+      method: "GET",
+      url: "/api/reports/weekly?collection=metadata-upgrade"
+    });
+    assert.equal(weeklyReport.statusCode, 200);
+    assert.match(weeklyReport.headers["content-type"], /text\/markdown/);
+    assert.match(weeklyReport.body, /# Metadata Upgrade 周报/);
+    assert.match(weeklyReport.body, /## 本周完成/);
+    assert.match(weeklyReport.body, /Research Note/);
+    assert.match(weeklyReport.body, /## 当前阻塞/);
+    assert.match(weeklyReport.body, /Plan Note/);
+    assert.match(weeklyReport.body, /## 下阶段计划/);
+
+    const reportReview = await app.inject({
+      method: "GET",
+      url: "/api/reports/review?collection=metadata-upgrade"
+    });
+    assert.equal(reportReview.statusCode, 200);
+    assert.match(reportReview.body, /# Metadata Upgrade PR Review 摘要/);
+    assert.match(reportReview.body, /Risk needs mitigation\./);
+
+    const globalReport = await app.inject({
+      method: "GET",
+      url: "/api/reports/global"
+    });
+    assert.equal(globalReport.statusCode, 200);
+    assert.match(globalReport.body, /# 全局报告/);
+    assert.match(globalReport.body, /## 项目集健康/);
+    assert.match(globalReport.body, /Metadata Upgrade：阻塞/);
+
+    const missingReport = await injectJson({
+      method: "GET",
+      url: "/api/reports/weekly?collection=missing",
+      expectedStatus: 404
+    });
+    assert.equal(missingReport.error, "Collection not found.");
   });
 
   it("deletes collections by unassigning member artifacts", async () => {

@@ -107,6 +107,9 @@ Routes:
   POST /api/artifacts/bulk
   GET  /api/export
   POST /api/import
+  GET  /api/reports/weekly
+  GET  /api/reports/review
+  GET  /api/reports/global
   GET  /api/collections
   GET  /api/collections/:id/markdown
   GET  /api/collections/:id/review-markdown
@@ -478,6 +481,31 @@ function createStore(root) {
       return null;
     }
     return collectionReviewMarkdown(collection);
+  }
+
+  async function getWeeklyReportMarkdown(collectionId) {
+    const collection = (await listCollections()).find((item) => item.id === collectionId);
+    if (!collection) {
+      return null;
+    }
+    return collectionWeeklyReportMarkdown(collection);
+  }
+
+  async function getReviewReportMarkdown(collectionId = "") {
+    const collections = await listCollections();
+    if (collectionId) {
+      const collection = collections.find((item) => item.id === collectionId);
+      return collection ? reviewReportMarkdown([collection], `${collection.title} PR Review 摘要`) : null;
+    }
+    return reviewReportMarkdown(collections, "PR Review 摘要");
+  }
+
+  async function getGlobalReportMarkdown() {
+    const [artifacts, collections] = await Promise.all([
+      listArtifacts(),
+      listCollections()
+    ]);
+    return globalReportMarkdown(collections, artifacts);
   }
 
   async function deleteCollection(id) {
@@ -1019,6 +1047,9 @@ function createStore(root) {
     listCollections,
     getCollectionMarkdown,
     getCollectionReviewMarkdown,
+    getWeeklyReportMarkdown,
+    getReviewReportMarkdown,
+    getGlobalReportMarkdown,
     deleteCollection,
     getArtifact,
     getArtifactMarkdown,
@@ -1457,6 +1488,152 @@ function collectionReviewMarkdown(collection) {
     lines.push("");
   }
 
+  return `${lines.join("\n").replace(/\n{3,}/g, "\n\n").trim()}\n`;
+}
+
+function collectionWeeklyReportMarkdown(collection) {
+  const since = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  const completed = collection.artifacts
+    .filter((artifact) => artifact.status === "done" || artifact.checkpoints.some((checkpoint) => Date.parse(checkpoint.doneAt || "") >= since))
+    .sort(compareArtifacts("updated-desc"));
+  const blocked = collection.artifacts
+    .filter((artifact) => artifact.status === "blocked" || artifact.reviewState === "blocked")
+    .sort(compareArtifactsForReview);
+  const review = collection.artifacts
+    .filter((artifact) => artifact.needsReview)
+    .sort(compareArtifactsForReview);
+  const risk = collection.artifacts
+    .filter((artifact) => artifact.riskNoteCount > 0 || artifact.reviewState === "changes-requested")
+    .sort(compareArtifactsForReview);
+  const next = collection.artifacts
+    .filter((artifact) => ["draft", "in-progress"].includes(artifact.status) && artifact.reviewState !== "blocked")
+    .sort(compareArtifacts("updated-desc"));
+  const progress = collection.checkpointCount
+    ? `${collection.doneCheckpointCount}/${collection.checkpointCount} (${collection.progressPercent}%)`
+    : "无阶段";
+  const lines = [
+    `# ${collection.title} 周报`,
+    "",
+    `- 项目集健康：${collection.healthLabel}`,
+    `- Artifact：${collection.artifactCount}`,
+    `- 阶段进度：${progress}`,
+    `- 未解决评论：${collection.openNoteCount}`,
+    ""
+  ];
+
+  appendReportSection(lines, "本周完成", completed, reportArtifactLine);
+  appendReportSection(lines, "当前阻塞", blocked, reviewArtifactLine);
+  appendReportSection(lines, "待 Review", review, reviewArtifactLine);
+  appendReportSection(lines, "风险", risk, reviewArtifactLine);
+  appendReportSection(lines, "下阶段计划", next, reportArtifactLine);
+
+  return normalizeMarkdown(lines);
+}
+
+function reviewReportMarkdown(collections, title) {
+  const sections = collections
+    .map((collection) => ({
+      collection,
+      artifacts: collection.artifacts
+        .filter((artifact) => artifact.openNoteCount > 0 && (artifact.riskNoteCount > 0 || artifact.actionNoteCount > 0 || artifact.questionNoteCount > 0 || artifact.blockedNoteCount > 0 || artifact.changesRequestedNoteCount > 0))
+        .sort(compareArtifactsForReview)
+    }))
+    .filter((section) => section.artifacts.length);
+  const lines = [
+    `# ${title}`,
+    "",
+    `- 项目集：${collections.length}`,
+    `- 未解决项目集：${sections.length}`,
+    `- 未解决 Artifact：${sections.reduce((sum, section) => sum + section.artifacts.length, 0)}`,
+    ""
+  ];
+
+  if (!sections.length) {
+    lines.push("暂无未解决问题、待办或风险。", "");
+    return normalizeMarkdown(lines);
+  }
+
+  for (const section of sections) {
+    lines.push(`## ${section.collection.title}`, "");
+    appendReportItems(lines, section.artifacts, reviewArtifactLine);
+  }
+
+  return normalizeMarkdown(lines);
+}
+
+function globalReportMarkdown(collections, artifacts) {
+  const since = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  const active = artifacts.filter((artifact) => artifact.status !== "archived");
+  const recent = active
+    .filter((artifact) => Date.parse(artifact.updatedAt || artifact.lastNoteAt || "") >= since || Date.parse(artifact.lastNoteAt || "") >= since)
+    .sort(compareArtifacts("updated-desc"));
+  const lines = [
+    "# 全局报告",
+    "",
+    `- 项目集：${collections.length}`,
+    `- 活跃 Artifact：${active.length}`,
+    `- 阻塞 Artifact：${active.filter((artifact) => artifact.status === "blocked" || artifact.reviewState === "blocked").length}`,
+    `- 待 Review Artifact：${active.filter((artifact) => artifact.needsReview).length}`,
+    `- 未解决评论：${active.reduce((sum, artifact) => sum + artifact.openNoteCount, 0)}`,
+    ""
+  ];
+
+  lines.push("## 项目集健康", "");
+  if (!collections.length) {
+    lines.push("- 暂无项目集。", "");
+  } else {
+    for (const collection of collections) {
+      const progress = collection.checkpointCount
+        ? `${collection.doneCheckpointCount}/${collection.checkpointCount} (${collection.progressPercent}%)`
+        : "无阶段";
+      lines.push(`- ${collection.title}：${collection.healthLabel}，${collection.artifactCount} 个 artifact，阶段 ${progress}，未解决 ${collection.openNoteCount}`);
+    }
+    lines.push("");
+  }
+
+  appendReportSection(lines, "最近变化", recent, reportArtifactLine);
+  return normalizeMarkdown(lines);
+}
+
+function appendReportSection(lines, title, items, formatter) {
+  lines.push(`## ${title}`, "");
+  appendReportItems(lines, items, formatter);
+}
+
+function appendReportItems(lines, items, formatter) {
+  const visible = items.slice(0, 12);
+  if (!visible.length) {
+    lines.push("- 暂无。", "");
+    return;
+  }
+  for (const item of visible) {
+    lines.push(formatter(item));
+  }
+  if (items.length > visible.length) {
+    lines.push(`- 另有 ${items.length - visible.length} 项未列出。`);
+  }
+  lines.push("");
+}
+
+function reportArtifactLine(artifact) {
+  const progress = artifact.checkpointCount
+    ? `${artifact.doneCheckpointCount}/${artifact.checkpointCount} (${artifact.progressPercent}%)`
+    : "无阶段";
+  return `- ${artifact.title}：${artifact.statusLabel}，${progress}，更新 ${formatIsoDate(artifact.updatedAt)}`;
+}
+
+function reviewArtifactLine(artifact) {
+  const latest = artifact.latestOpenNote
+    ? `；最近：${artifact.latestOpenNote.reviewStateLabel} / ${artifact.latestOpenNote.severityLabel || "无严重度"} / ${noteCategoryLabel(artifact.latestOpenNote.category)}：${artifact.latestOpenNote.text}`
+    : "";
+  return `- ${artifact.title}：${artifact.reviewStateLabel}，未解决 ${artifact.openNoteCount}，风险 ${artifact.riskNoteCount}，待办 ${artifact.actionNoteCount}，阻塞 ${artifact.blockedNoteCount}${latest}`;
+}
+
+function formatIsoDate(value) {
+  return value ? String(value).slice(0, 10) : "无时间";
+}
+
+function normalizeMarkdown(lines) {
   return `${lines.join("\n").replace(/\n{3,}/g, "\n\n").trim()}\n`;
 }
 
@@ -1936,6 +2113,8 @@ function dashboardPage(root) {
 
       <section id="organizeHub" class="personal-hub" aria-label="整理视图"></section>
 
+      <section id="reportCenter" class="review-dashboard" aria-label="报告中心"></section>
+
       <section id="reviewDashboard" class="review-dashboard" aria-label="Review Dashboard"></section>
 
       <section id="collections" class="collections" aria-label="项目集"></section>
@@ -1998,6 +2177,7 @@ function dashboardPage(root) {
         quickType: document.querySelector("#quickType"),
         quickCollection: document.querySelector("#quickCollection"),
         quickCheckpoint: document.querySelector("#quickCheckpoint"),
+        reportCenter: document.querySelector("#reportCenter"),
         reviewDashboard: document.querySelector("#reviewDashboard"),
         collections: document.querySelector("#collections"),
         collectionMatrix: document.querySelector("#collectionMatrix"),
@@ -2220,6 +2400,28 @@ function dashboardPage(root) {
           '<select data-organize-collection="' + escapeHtml(key) + '" aria-label="选择项目集" ' + (!collectionResult.length ? "disabled" : "") + '>' + options + '</select>',
           '<input type="text" data-organize-new-collection="' + escapeHtml(key) + '" placeholder="新项目集名称" aria-label="新项目集名称">'
         ].join("");
+      }
+
+      function renderReportCenter() {
+        const options = collectionResult.length
+          ? collectionResult.map((collection) => '<option value="' + escapeHtml(collection.id) + '">' + escapeHtml(collection.title || collection.id) + '</option>').join("")
+          : '<option value="">暂无项目集</option>';
+        elements.reportCenter.innerHTML = \`
+          <div class="section-head">
+            <div>
+              <h2>报告中心</h2>
+              <p>一键复制周报、PR Review 摘要和全局健康报告。</p>
+            </div>
+          </div>
+          <div class="report-actions">
+            <select id="reportCollection" aria-label="报告项目集" \${collectionResult.length ? "" : "disabled"}>
+              \${options}
+            </select>
+            <button type="button" data-report-kind="weekly" \${collectionResult.length ? "" : "disabled"}>复制项目集周报</button>
+            <button type="button" data-report-kind="review">复制 PR Review 摘要</button>
+            <button type="button" data-report-kind="global">复制全局报告</button>
+          </div>
+        \`;
       }
 
       function renderReviewDashboard(stats) {
@@ -2659,6 +2861,7 @@ function dashboardPage(root) {
         renderStats(searchResult.stats);
         renderPersonalHub(searchResult.stats);
         renderOrganizeHub(searchResult.stats);
+        renderReportCenter();
         renderReviewDashboard(searchResult.stats);
         if (!preserveFacets) {
           renderFacets(searchResult.facets);
@@ -2881,6 +3084,41 @@ function dashboardPage(root) {
         }
         collectionSort = target.value;
         renderCollections(collectionResult);
+      });
+      elements.reportCenter.addEventListener("click", async (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLButtonElement) || !target.dataset.reportKind) {
+          return;
+        }
+        const select = elements.reportCenter.querySelector("#reportCollection");
+        const collection = select instanceof HTMLSelectElement ? select.value : "";
+        let path = "/api/reports/global";
+        if (target.dataset.reportKind === "weekly") {
+          if (!collection) {
+            elements.resultSummary.textContent = "请先选择项目集。";
+            return;
+          }
+          path = "/api/reports/weekly?collection=" + encodeURIComponent(collection);
+        } else if (target.dataset.reportKind === "review") {
+          path = collection
+            ? "/api/reports/review?collection=" + encodeURIComponent(collection)
+            : "/api/reports/review";
+        }
+        target.disabled = true;
+        try {
+          const response = await fetch(withAuthPath(path));
+          await assertOk(response);
+          await navigator.clipboard.writeText(await response.text());
+          const previous = target.textContent;
+          target.textContent = "已复制";
+          setTimeout(() => {
+            target.textContent = previous;
+          }, 1200);
+        } catch (error) {
+          elements.resultSummary.textContent = "复制报告失败：" + error.message;
+        } finally {
+          target.disabled = false;
+        }
       });
       elements.organizeHub.addEventListener("click", async (event) => {
         const target = event.target;
@@ -3950,6 +4188,20 @@ function pageShell(title, body) {
       color: var(--muted);
       font-size: 12px;
     }
+    .report-actions {
+      display: grid;
+      grid-template-columns: minmax(180px, 1fr) repeat(3, auto);
+      gap: 8px;
+      align-items: center;
+    }
+    .report-actions select {
+      min-height: 38px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--panel);
+      color: var(--text);
+      padding: 8px 10px;
+    }
     .review-queue {
       margin-top: 12px;
       border-top: 1px solid var(--border);
@@ -4569,6 +4821,7 @@ function pageShell(title, body) {
       .stats,
       .review-cards,
       .personal-grid,
+      .report-actions,
       .filters {
         grid-template-columns: repeat(2, minmax(0, 1fr));
       }
@@ -4605,6 +4858,7 @@ function pageShell(title, body) {
       .stats,
       .personal-grid,
       .quick-create-form,
+      .report-actions,
       .collection-card {
         grid-template-columns: 1fr;
       }
@@ -4759,6 +5013,32 @@ async function createApp(store, options = {}) {
   app.post("/api/import", async (request, reply) => {
     const result = await store.importAllArtifactsBundle(request.body);
     return reply.send(result);
+  });
+
+  app.get("/api/reports/weekly", async (request, reply) => {
+    const collectionId = String(request.query?.collection || "");
+    const markdown = await store.getWeeklyReportMarkdown(collectionId);
+    if (markdown === null) {
+      return reply.code(404).send({
+        error: "Collection not found."
+      });
+    }
+    return reply.type("text/markdown; charset=utf-8").send(markdown);
+  });
+
+  app.get("/api/reports/review", async (request, reply) => {
+    const markdown = await store.getReviewReportMarkdown(String(request.query?.collection || ""));
+    if (markdown === null) {
+      return reply.code(404).send({
+        error: "Collection not found."
+      });
+    }
+    return reply.type("text/markdown; charset=utf-8").send(markdown);
+  });
+
+  app.get("/api/reports/global", async (request, reply) => {
+    const markdown = await store.getGlobalReportMarkdown();
+    return reply.type("text/markdown; charset=utf-8").send(markdown);
   });
 
   app.get("/api/collections", async () => {
