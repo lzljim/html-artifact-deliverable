@@ -977,6 +977,11 @@ function createStore(root) {
           priority: "normal"
         });
         updated.push(id);
+      } else if (action === "reference") {
+        await updatePersonal(id, {
+          reference: true
+        });
+        updated.push(id);
       } else if (action === "collection") {
         const metadata = await readJson(artifactJsonPath(id), {
           id
@@ -2149,7 +2154,7 @@ function dashboardPage(root) {
       function renderOrganizeHub(stats) {
         const sections = stats.organizeSections || {};
         const groups = [
-          ["doneOpen", "已完成未归档", "可批量归档", "archive"],
+          ["doneOpen", "已完成未归档", "可批量归档或设为常用资料", ["archive", "reference"]],
           ["stale", "较久未继续", "超过 14 天未打开或更新", ""],
           ["noCollection", "未归入项目集", "可批量加入项目集", "collection"],
           ["noCheckpoint", "无阶段", "适合补初始阶段", ""]
@@ -2179,9 +2184,8 @@ function dashboardPage(root) {
         const collectionSelect = action === "collection"
           ? renderOrganizeCollectionSelect(key)
           : "";
-        const button = action
-          ? '<button type="button" data-bulk-action="' + escapeHtml(action) + '" data-organize-key="' + escapeHtml(key) + '">' + (action === "archive" ? "归档选中" : "加入项目集") + '</button>'
-          : "";
+        const actions = Array.isArray(action) ? action : (action ? [action] : []);
+        const buttons = actions.map((item) => '<button type="button" data-bulk-action="' + escapeHtml(item) + '" data-organize-key="' + escapeHtml(key) + '">' + escapeHtml(organizeActionLabel(item)) + '</button>').join("");
         return \`
           <article class="personal-group">
             <header>
@@ -2190,9 +2194,19 @@ function dashboardPage(root) {
             </header>
             \${body}
             \${collectionSelect}
-            \${button}
+            \${buttons}
           </article>
         \`;
+      }
+
+      function organizeActionLabel(action) {
+        if (action === "archive") {
+          return "归档选中";
+        }
+        if (action === "reference") {
+          return "设为资料";
+        }
+        return "加入项目集";
       }
 
       function renderOrganizeCollectionSelect(key) {

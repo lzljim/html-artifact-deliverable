@@ -162,6 +162,7 @@ describe("artifact server", () => {
     assert.match(dashboard.body, /data-organize-new-collection/);
     assert.match(dashboard.body, /data-personal-action="pin"/);
     assert.match(dashboard.body, /data-personal-action="reference"/);
+    assert.match(dashboard.body, /organizeActionLabel/);
     assert.match(dashboard.body, /常用资料/);
     assert.match(dashboard.body, /data-review-filter=/);
     assert.match(dashboard.body, /待办 \/ Review 队列/);
@@ -537,6 +538,31 @@ describe("artifact server", () => {
     assert.ok(!referenceSearch.stats.organizeSections.doneOpen.some((item) => item.id === "reference-plan"));
     assert.ok(!referenceSearch.stats.personalSections.closing.some((item) => item.id === "reference-plan"));
     assert.ok(!referenceSearch.stats.personalSections.reference.some((item) => item.id === "archived-reference"));
+
+    await writeArtifact("bulk-reference-plan", {
+      title: "Bulk Reference Plan",
+      type: "architecture-explainer"
+    }, {
+      status: "done"
+    });
+    const bulkReference = await injectJson({
+      method: "POST",
+      url: "/api/artifacts/bulk",
+      headers: {
+        "content-type": "application/json"
+      },
+      payload: {
+        ids: ["bulk-reference-plan"],
+        action: "reference"
+      }
+    });
+    assert.equal(bulkReference.updatedCount, 1);
+    const bulkReferenceSearch = await injectJson({
+      method: "GET",
+      url: "/api/artifacts/search"
+    });
+    assert.ok(bulkReferenceSearch.stats.personalSections.reference.some((item) => item.id === "bulk-reference-plan"));
+    assert.ok(!bulkReferenceSearch.stats.organizeSections.doneOpen.some((item) => item.id === "bulk-reference-plan"));
 
     const opened = await injectJson({
       method: "POST",
