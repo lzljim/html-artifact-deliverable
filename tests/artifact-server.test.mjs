@@ -164,6 +164,7 @@ describe("artifact server", () => {
     assert.match(dashboard.body, /暂无待办或未解决 review 项/);
     assert.match(dashboard.body, /项目集进度矩阵/);
     assert.match(dashboard.body, /id="collectionSort"/);
+    assert.match(dashboard.body, /data-collection-delete-id/);
     assert.match(dashboard.body, /导出全部/);
     assert.match(dashboard.body, /导入全部/);
     assert.ok(
@@ -694,6 +695,77 @@ describe("artifact server", () => {
     assert.match(reviewMarkdown.body, /# Metadata Upgrade Review 摘要/);
     assert.match(reviewMarkdown.body, /- 待办：1/);
     assert.match(reviewMarkdown.body, /最近待处理：待处理 \/ 高 \/ 风险：Risk needs mitigation\./);
+  });
+
+  it("deletes collections by unassigning member artifacts", async () => {
+    await writeJson(path.join(tempRoot, "collection.json"), {
+      collections: [
+        {
+          id: "configured-work",
+          title: "Configured Work",
+          artifactIds: ["configured-plan"]
+        }
+      ]
+    });
+    await writeArtifact("configured-plan", {
+      title: "Configured Plan",
+      collection: {
+        id: "configured-work",
+        title: "Configured Work"
+      }
+    });
+    await writeArtifact("metadata-plan", {
+      title: "Metadata Plan",
+      collection: {
+        id: "metadata-only",
+        title: "Metadata Only"
+      }
+    });
+
+    const configuredDelete = await injectJson({
+      method: "DELETE",
+      url: "/api/collections/configured-work"
+    });
+    assert.deepEqual(configuredDelete, {
+      deleted: true,
+      id: "configured-work",
+      unassignedCount: 1
+    });
+    const configuredMetadata = JSON.parse(await fs.readFile(path.join(tempRoot, "configured-plan", "artifact.json"), "utf8"));
+    assert.equal(configuredMetadata.collection, null);
+    const collectionConfig = JSON.parse(await fs.readFile(path.join(tempRoot, "collection.json"), "utf8"));
+    assert.deepEqual(collectionConfig.collections, []);
+
+    const metadataDelete = await injectJson({
+      method: "DELETE",
+      url: "/api/collections/metadata-only"
+    });
+    assert.deepEqual(metadataDelete, {
+      deleted: true,
+      id: "metadata-only",
+      unassignedCount: 1
+    });
+    const metadataOnly = JSON.parse(await fs.readFile(path.join(tempRoot, "metadata-plan", "artifact.json"), "utf8"));
+    assert.equal(metadataOnly.collection, null);
+
+    const collections = await injectJson({
+      method: "GET",
+      url: "/api/collections"
+    });
+    assert.deepEqual(collections.map((item) => item.id), []);
+
+    const search = await injectJson({
+      method: "GET",
+      url: "/api/artifacts/search"
+    });
+    assert.deepEqual(search.stats.organizeSections.noCollection.map((item) => item.id).sort(), ["configured-plan", "metadata-plan"]);
+
+    const missing = await injectJson({
+      method: "DELETE",
+      url: "/api/collections/missing-work",
+      expectedStatus: 404
+    });
+    assert.equal(missing.error, "Collection not found.");
   });
 
   it("hides archived artifacts by default but keeps them searchable", async () => {

@@ -393,6 +393,10 @@ function createStore(root) {
     return path.join(artifactDir(id), "state.json");
   }
 
+  function collectionJsonPath() {
+    return path.join(absoluteRoot, "collection.json");
+  }
+
   async function ensureRoot() {
     await fs.mkdir(absoluteRoot, {
       recursive: true
@@ -439,13 +443,19 @@ function createStore(root) {
   }
 
   async function readCollectionConfig() {
-    const raw = await readJson(path.join(absoluteRoot, "collection.json"), {
+    const raw = await readJson(collectionJsonPath(), {
       collections: []
     });
     const collections = Array.isArray(raw) ? raw : raw.collections;
     return Array.isArray(collections)
       ? collections.map(normalizeCollectionConfig).filter((item) => item.id)
       : [];
+  }
+
+  async function writeCollectionConfig(collections) {
+    await writeJsonAtomic(collectionJsonPath(), {
+      collections
+    });
   }
 
   async function listCollections() {
@@ -468,6 +478,44 @@ function createStore(root) {
       return null;
     }
     return collectionReviewMarkdown(collection);
+  }
+
+  async function deleteCollection(id) {
+    const collectionId = slugify(id);
+    const configs = await readCollectionConfig();
+    const artifacts = await listArtifacts();
+    const collection = buildCollections(configs, artifacts).find((item) => item.id === collectionId);
+    const configExists = configs.some((item) => item.id === collectionId);
+    if (!collection && !configExists) {
+      const error = new Error("Collection not found.");
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const now = new Date().toISOString();
+    let unassignedCount = 0;
+    for (const artifact of artifacts) {
+      if (artifact.collection?.id !== collectionId) {
+        continue;
+      }
+      const metadata = await readJson(artifactJsonPath(artifact.id), {
+        id: artifact.id
+      });
+      metadata.collection = null;
+      metadata.updatedAt = now;
+      await writeJsonAtomic(artifactJsonPath(artifact.id), metadata);
+      unassignedCount += 1;
+    }
+
+    if (configExists) {
+      await writeCollectionConfig(configs.filter((item) => item.id !== collectionId));
+    }
+
+    return {
+      deleted: true,
+      id: collectionId,
+      unassignedCount
+    };
   }
 
   async function searchArtifacts(filters) {
@@ -966,6 +1014,7 @@ function createStore(root) {
     listCollections,
     getCollectionMarkdown,
     getCollectionReviewMarkdown,
+    deleteCollection,
     getArtifact,
     getArtifactMarkdown,
     getArtifactBundle,
@@ -2350,6 +2399,7 @@ function dashboardPage(root) {
             <div class="collection-actions">
               <button type="button" data-collection-id="\${escapeHtml(collection.id)}">复制摘要</button>
               <button type="button" data-collection-review-id="\${escapeHtml(collection.id)}">复制 Review</button>
+              <button type="button" data-collection-delete-id="\${escapeHtml(collection.id)}" data-collection-title="\${escapeHtml(collection.title)}">解散</button>
             </div>
           </article>
         \`;
@@ -2744,6 +2794,28 @@ function dashboardPage(root) {
           activeCollection = "";
           history.replaceState(null, "", withAuthPath("/"));
           load({ preserveFacets: true }).catch(renderError);
+          return;
+        }
+        if (target instanceof HTMLButtonElement && target.dataset.collectionDeleteId) {
+          const title = target.dataset.collectionTitle || target.dataset.collectionDeleteId;
+          if (!window.confirm("解散项目集「" + title + "」？所属 artifact 会变成无归属，可在整理视图重新加入项目集。")) {
+            return;
+          }
+          target.disabled = true;
+          try {
+            await fetch(withAuthPath("/api/collections/" + encodeURIComponent(target.dataset.collectionDeleteId)), {
+              method: "DELETE"
+            }).then(assertOk);
+            if (activeCollection === target.dataset.collectionDeleteId) {
+              activeCollection = "";
+              history.replaceState(null, "", withAuthPath("/"));
+            }
+            await load({ preserveFacets: true });
+          } catch (error) {
+            elements.resultSummary.textContent = "解散项目集失败：" + error.message;
+          } finally {
+            target.disabled = false;
+          }
           return;
         }
         if (!(target instanceof HTMLButtonElement) || !target.dataset.collectionId) {
@@ -4648,6 +4720,10 @@ async function createApp(store, options = {}) {
 
   app.get("/api/collections", async () => {
     return store.listCollections();
+  });
+
+  app.delete("/api/collections/:id", async (request) => {
+    return store.deleteCollection(request.params.id);
   });
 
   app.get("/api/collections/:id/markdown", async (request, reply) => {
