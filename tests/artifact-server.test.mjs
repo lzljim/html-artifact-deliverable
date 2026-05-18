@@ -175,6 +175,8 @@ describe("artifact server", () => {
     assert.match(page.body, /id="copyMarkdown"/);
     assert.match(page.body, /id="copyComments"/);
     assert.match(page.body, /id="noteFilter"/);
+    assert.match(page.body, /id="noteReviewState"/);
+    assert.match(page.body, /data-note-action="update"/);
     assert.match(page.body, /导出全部/);
     assert.match(page.body, /checkpoint-note-save/);
   });
@@ -250,6 +252,14 @@ describe("artifact server", () => {
     assert.equal(artifact.latestOpenNote.overdue, true);
     assert.equal(artifact.checkpoints[0].review.reviewState, "changes-requested");
     assert.equal(artifact.checkpoints[1].review.reviewState, "needs-review");
+
+    const filtered = await injectJson({
+      method: "GET",
+      url: "/api/artifacts/search?review=changes-requested"
+    });
+    assert.deepEqual(filtered.items.map((item) => item.id), ["workflow-plan"]);
+    assert.equal(filtered.stats.changesRequestedArtifacts, 1);
+    assert.equal(filtered.stats.overdueNotes, 1);
 
     const state = await injectJson({
       method: "GET",
@@ -336,7 +346,27 @@ describe("artifact server", () => {
     });
     assert.equal(reopened.notes.at(-1).resolved, false);
     assert.equal(reopened.notes.at(-1).resolvedAt, null);
+    assert.equal(reopened.notes.at(-1).reviewState, "open");
     assert.equal(reopened.history.at(-1).type, "note.reopened");
+
+    const updatedNote = await injectJson({
+      method: "PATCH",
+      url: `/api/artifacts/review-plan/notes/${noteId}`,
+      headers: {
+        "content-type": "application/json"
+      },
+      payload: {
+        reviewState: "changes-requested",
+        severity: "high",
+        owner: "Bob",
+        dueAt: "2026-01-01"
+      }
+    });
+    assert.equal(updatedNote.notes.at(-1).reviewState, "changes-requested");
+    assert.equal(updatedNote.notes.at(-1).severity, "high");
+    assert.equal(updatedNote.notes.at(-1).owner, "Bob");
+    assert.equal(updatedNote.notes.at(-1).dueAt, "2026-01-01");
+    assert.equal(updatedNote.history.at(-1).type, "note.updated");
 
     const toggled = await injectJson({
       method: "POST",
@@ -352,6 +382,7 @@ describe("artifact server", () => {
     assert.equal(diskState.checkpoints[0].done, true);
     assert.equal(diskState.notes[0].author, "Alice");
     assert.equal(diskState.notes[0].checkpointId, "stage-1");
+    assert.equal(diskState.notes[0].reviewState, "changes-requested");
   });
 
   it("keeps current work ahead of done artifacts while sorting inside status groups", async () => {
@@ -513,7 +544,7 @@ describe("artifact server", () => {
     assert.match(reviewMarkdown.headers["content-type"], /text\/markdown/);
     assert.match(reviewMarkdown.body, /# Metadata Upgrade Review 摘要/);
     assert.match(reviewMarkdown.body, /- 待办：1/);
-    assert.match(reviewMarkdown.body, /最近待处理：风险：Risk needs mitigation\./);
+    assert.match(reviewMarkdown.body, /最近待处理：待处理 \/ 高 \/ 风险：Risk needs mitigation\./);
   });
 
   it("hides archived artifacts by default but keeps them searchable", async () => {
@@ -595,7 +626,9 @@ describe("artifact server", () => {
     assert.match(markdown.headers["content-type"], /text\/markdown/);
     assert.match(markdown.headers["content-disposition"], /export-plan-status\.md/);
     assert.match(markdown.body, /# Export Plan/);
+    assert.match(markdown.body, /Review 状态：已认可/);
     assert.match(markdown.body, /- \[x\] Stage 1/);
+    assert.match(markdown.body, /已认可 \/ 严重度 低/);
     assert.match(markdown.body, /Looks good\./);
 
     const bundle = await injectJson({
