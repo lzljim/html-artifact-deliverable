@@ -1613,7 +1613,8 @@ function defaultPersonal() {
     pinned: false,
     priority: "normal",
     snoozedUntil: "",
-    lastOpenedAt: null
+    lastOpenedAt: null,
+    reference: false
   };
 }
 
@@ -1623,7 +1624,8 @@ function normalizePersonal(value) {
     pinned: Boolean(value?.pinned),
     priority: ["normal", "focus", "later"].includes(priority) ? priority : "normal",
     snoozedUntil: normalizeDueAt(value?.snoozedUntil),
-    lastOpenedAt: value?.lastOpenedAt || null
+    lastOpenedAt: value?.lastOpenedAt || null,
+    reference: Boolean(value?.reference)
   };
 }
 
@@ -1829,6 +1831,8 @@ function buildPersonalSections(artifacts) {
     status: item.status,
     statusLabel: item.statusLabel,
     reviewStateLabel: item.reviewStateLabel,
+    typeLabel: item.typeLabel,
+    collection: item.collection,
     progressPercent: item.progressPercent,
     openNoteCount: item.openNoteCount,
     personal: item.personal,
@@ -1838,7 +1842,8 @@ function buildPersonalSections(artifacts) {
     focus: summarize(active.filter((item) => item.personal?.pinned || item.personal?.priority === "focus").sort(byFocus)),
     recent: summarize(active.slice().sort((left, right) => String(right.personal?.lastOpenedAt || right.updatedAt || "").localeCompare(String(left.personal?.lastOpenedAt || left.updatedAt || "")))),
     blocked: summarize(active.filter((item) => item.status === "blocked" || item.blockedOrRisk || item.openNoteCount > 0).sort(compareArtifactsForReview)),
-    closing: summarize(active.filter((item) => item.status === "done" || (item.checkpointCount > 0 && item.doneCheckpointCount === item.checkpointCount)).sort(compareArtifacts("updated-desc")))
+    reference: summarize(active.filter((item) => item.personal?.reference).sort(compareArtifacts("updated-desc"))),
+    closing: summarize(active.filter((item) => !item.personal?.reference && (item.status === "done" || (item.checkpointCount > 0 && item.doneCheckpointCount === item.checkpointCount))).sort(compareArtifacts("updated-desc")))
   };
 }
 
@@ -1862,7 +1867,7 @@ function buildOrganizeSections(artifacts) {
   }));
   return {
     stale: summarize(active.filter((item) => Date.parse(item.personal?.lastOpenedAt || item.updatedAt || "") < staleSince)),
-    doneOpen: summarize(active.filter((item) => item.status === "done")),
+    doneOpen: summarize(active.filter((item) => item.status === "done" && !item.personal?.reference)),
     noCollection: summarize(active.filter((item) => !item.collection?.id)),
     noCheckpoint: summarize(active.filter((item) => item.checkpointCount === 0))
   };
@@ -2092,6 +2097,7 @@ function dashboardPage(root) {
         const sections = stats.personalSections || {};
         const groups = [
           ["focus", "当前重点", "置顶或 focus 的 artifact"],
+          ["reference", "常用资料", "架构、体系说明等随时查看的内容"],
           ["recent", "最近继续", "按打开时间和更新时间排序"],
           ["blocked", "阻塞/待处理", "阻塞、风险或未关闭事项"],
           ["closing", "可收尾/可归档", "已完成或阶段已全部完成"]
@@ -2114,7 +2120,7 @@ function dashboardPage(root) {
           ? items.map((item) => \`
               <a class="personal-item" href="\${withAuthPath("/artifacts/" + encodeURIComponent(item.id))}">
                 <strong>\${escapeHtml(item.title)}</strong>
-                <span>\${escapeHtml(item.statusLabel)} · \${escapeHtml(item.reviewStateLabel || "无未解决项")}</span>
+                <span>\${escapeHtml(personalItemMeta(item))}</span>
               </a>
             \`).join("")
           : '<div class="empty compact">暂无</div>';
@@ -2127,6 +2133,17 @@ function dashboardPage(root) {
             \${body}
           </article>
         \`;
+      }
+
+      function personalItemMeta(item) {
+        if (item.personal?.reference) {
+          return [
+            item.typeLabel,
+            item.collection?.title || item.collection?.id,
+            "更新于 " + formatDate(item.updatedAt)
+          ].filter(Boolean).join(" · ");
+        }
+        return item.statusLabel + " · " + (item.reviewStateLabel || "无未解决项");
       }
 
       function renderOrganizeHub(stats) {
@@ -2583,6 +2600,7 @@ function dashboardPage(root) {
               <div class="quick-actions">
                 <button type="button" data-personal-action="pin" data-artifact-id="\${escapeHtml(artifact.id)}">\${artifact.personal?.pinned ? "取消置顶" : "置顶"}</button>
                 <button type="button" data-personal-action="later" data-artifact-id="\${escapeHtml(artifact.id)}">稍后</button>
+                <button type="button" data-personal-action="reference" data-artifact-id="\${escapeHtml(artifact.id)}">\${artifact.personal?.reference ? "移出资料" : "设为资料"}</button>
                 <button type="button" data-status-action="done" data-artifact-id="\${escapeHtml(artifact.id)}">完成</button>
                 <button type="button" data-status-action="archived" data-artifact-id="\${escapeHtml(artifact.id)}">归档</button>
                 <button type="button" data-card-action="note" data-artifact-id="\${escapeHtml(artifact.id)}">备注</button>
@@ -2916,6 +2934,11 @@ function dashboardPage(root) {
               priority: "later",
               pinned: false,
               snoozedUntil: date || ""
+            });
+          } else if (target.dataset.personalAction === "reference") {
+            const artifact = searchResult.items.find((item) => item.id === id);
+            await patchPersonal(id, {
+              reference: !artifact?.personal?.reference
             });
           } else if (target.dataset.statusAction) {
             await patchStatus(id, target.dataset.statusAction);

@@ -33,6 +33,7 @@ async function writeArtifact(id, metadata = {}, state = {}) {
     status: state.status || "in-progress",
     checkpoints: state.checkpoints || [],
     notes: state.notes || [],
+    personal: state.personal || {},
     history: state.history || []
   });
 }
@@ -160,6 +161,8 @@ describe("artifact server", () => {
     assert.match(dashboard.body, /data-organize-collection/);
     assert.match(dashboard.body, /data-organize-new-collection/);
     assert.match(dashboard.body, /data-personal-action="pin"/);
+    assert.match(dashboard.body, /data-personal-action="reference"/);
+    assert.match(dashboard.body, /常用资料/);
     assert.match(dashboard.body, /data-review-filter=/);
     assert.match(dashboard.body, /待办 \/ Review 队列/);
     assert.match(dashboard.body, /暂无待办或未解决 review 项/);
@@ -412,6 +415,7 @@ describe("artifact server", () => {
     assert.equal(created.status, "draft");
     assert.equal(created.checkpointCount, 1);
     assert.equal(created.personal.priority, "focus");
+    assert.equal(created.personal.reference, false);
 
     const duplicate = await injectJson({
       method: "POST",
@@ -480,12 +484,59 @@ describe("artifact server", () => {
       payload: {
         pinned: true,
         priority: "later",
-        snoozedUntil: "2026-05-20"
+        snoozedUntil: "2026-05-20",
+        reference: true
       }
     });
     assert.equal(personal.personal.pinned, true);
     assert.equal(personal.personal.priority, "later");
     assert.equal(personal.personal.snoozedUntil, "2026-05-20");
+    assert.equal(personal.personal.reference, true);
+
+    const personalReferenceOff = await injectJson({
+      method: "PATCH",
+      url: "/api/artifacts/personal-plan/personal",
+      headers: {
+        "content-type": "application/json"
+      },
+      payload: {
+        reference: false
+      }
+    });
+    assert.equal(personalReferenceOff.personal.reference, false);
+
+    await writeArtifact("reference-plan", {
+      title: "Reference Plan",
+      type: "architecture-explainer",
+      collection: {
+        id: "personal-work",
+        title: "Personal Work"
+      }
+    }, {
+      status: "done",
+      personal: {
+        reference: true
+      }
+    });
+    await writeArtifact("archived-reference", {
+      title: "Archived Reference",
+      type: "architecture-explainer"
+    }, {
+      status: "archived",
+      personal: {
+        reference: true
+      }
+    });
+    const referenceSearch = await injectJson({
+      method: "GET",
+      url: "/api/artifacts/search"
+    });
+    assert.deepEqual(referenceSearch.stats.personalSections.reference.map((item) => item.id), ["reference-plan"]);
+    assert.equal(referenceSearch.stats.personalSections.reference[0].typeLabel, "架构说明");
+    assert.equal(referenceSearch.stats.personalSections.reference[0].collection.title, "Personal Work");
+    assert.ok(!referenceSearch.stats.organizeSections.doneOpen.some((item) => item.id === "reference-plan"));
+    assert.ok(!referenceSearch.stats.personalSections.closing.some((item) => item.id === "reference-plan"));
+    assert.ok(!referenceSearch.stats.personalSections.reference.some((item) => item.id === "archived-reference"));
 
     const opened = await injectJson({
       method: "POST",
