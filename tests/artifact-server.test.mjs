@@ -136,40 +136,34 @@ describe("artifact server", () => {
     assert.equal(search.items[0].latestOpenNote.category, "risk");
     assert.equal(search.items[0].reviewPriority, 4);
     assert.equal(search.items[0].reviewState, "needs-review");
-    assert.equal(search.items[0].highestSeverity, "high");
+    assert.equal(search.items[0].highestSeverity, "");
     assert.equal(search.items[0].checkpoints[0].review.reviewState, "needs-review");
     assert.equal(search.stats.openNotes, 2);
     assert.equal(search.stats.riskNotes, 1);
     assert.equal(search.stats.actionNotes, 1);
     assert.equal(search.stats.reviewArtifacts, 1);
 
-    const riskSearch = await injectJson({
-      method: "GET",
-      url: "/api/artifacts/search?review=risk"
-    });
-    assert.deepEqual(riskSearch.items.map((item) => item.id), ["plan-alpha"]);
-
     const dashboard = await app.inject({
       method: "GET",
       url: "/"
     });
     assert.equal(dashboard.statusCode, 200);
-    assert.match(dashboard.body, /Review Dashboard/);
     assert.match(dashboard.body, /id="personalHub"/);
     assert.match(dashboard.body, /id="quickCreateForm"/);
     assert.match(dashboard.body, /id="organizeHub"/);
     assert.match(dashboard.body, /id="reportCenter"/);
     assert.match(dashboard.body, /报告中心/);
     assert.match(dashboard.body, /data-report-kind="weekly"/);
+    assert.doesNotMatch(dashboard.body, /data-report-kind="review"/);
     assert.match(dashboard.body, /data-organize-collection/);
     assert.match(dashboard.body, /data-organize-new-collection/);
     assert.match(dashboard.body, /data-personal-action="pin"/);
     assert.match(dashboard.body, /data-personal-action="reference"/);
     assert.match(dashboard.body, /organizeActionLabel/);
     assert.match(dashboard.body, /常用资料/);
-    assert.match(dashboard.body, /data-review-filter=/);
-    assert.match(dashboard.body, /待办 \/ Review 队列/);
-    assert.match(dashboard.body, /暂无待办或未解决 review 项/);
+    assert.doesNotMatch(dashboard.body, /Review Dashboard/);
+    assert.doesNotMatch(dashboard.body, /data-review-filter=/);
+    assert.doesNotMatch(dashboard.body, /复制 Review/);
     assert.match(dashboard.body, /项目集进度矩阵/);
     assert.match(dashboard.body, /id="collectionSort"/);
     assert.match(dashboard.body, /data-collection-delete-id/);
@@ -190,7 +184,10 @@ describe("artifact server", () => {
     assert.match(page.body, /id="copyComments"/);
     assert.match(page.body, /id="noteFilter"/);
     assert.match(page.body, /id="quickNoteForm"/);
-    assert.match(page.body, /id="noteReviewState"/);
+    assert.match(page.body, /个人备注/);
+    assert.match(page.body, /id="toggleReference"/);
+    assert.doesNotMatch(page.body, /id="noteReviewState"/);
+    assert.doesNotMatch(page.body, /placeholder="负责人"/);
     assert.match(page.body, /data-note-action="update"/);
     assert.match(page.body, /导出全部/);
     assert.match(page.body, /checkpoint-note-save/);
@@ -222,6 +219,7 @@ describe("artifact server", () => {
           at: "2026-05-17T00:00:00.000Z",
           text: "Approved baseline.",
           category: "approval",
+          reviewState: "approved",
           resolved: false
         },
         {
@@ -259,7 +257,7 @@ describe("artifact server", () => {
     });
     assert.equal(artifact.openNoteCount, 2);
     assert.equal(artifact.reviewState, "changes-requested");
-    assert.equal(artifact.reviewStateLabel, "需修改");
+    assert.equal(artifact.reviewStateLabel, "需处理");
     assert.equal(artifact.highestSeverity, "high");
     assert.equal(artifact.overdueNoteCount, 1);
     assert.equal(artifact.approvalNoteCount, 1);
@@ -268,22 +266,14 @@ describe("artifact server", () => {
     assert.equal(artifact.checkpoints[0].review.reviewState, "changes-requested");
     assert.equal(artifact.checkpoints[1].review.reviewState, "needs-review");
 
-    const filtered = await injectJson({
-      method: "GET",
-      url: "/api/artifacts/search?review=changes-requested"
-    });
-    assert.deepEqual(filtered.items.map((item) => item.id), ["workflow-plan"]);
-    assert.equal(filtered.stats.changesRequestedArtifacts, 1);
-    assert.equal(filtered.stats.overdueNotes, 1);
-
     const state = await injectJson({
       method: "GET",
       url: "/api/artifacts/workflow-plan/state"
     });
     assert.equal(state.notes.find((item) => item.id === "approval-1").reviewState, "approved");
-    assert.equal(state.notes.find((item) => item.id === "question-1").reviewState, "open");
-    assert.equal(state.notes.find((item) => item.id === "question-1").severity, "medium");
-    assert.equal(state.notes.find((item) => item.id === "resolved-risk").reviewState, "resolved");
+    assert.equal(state.notes.find((item) => item.id === "question-1").reviewState, undefined);
+    assert.equal(state.notes.find((item) => item.id === "question-1").severity, undefined);
+    assert.equal(state.notes.find((item) => item.id === "resolved-risk").reviewState, undefined);
   });
 
   it("persists status, checkpoint notes, notes, and checkpoint toggles", async () => {
@@ -344,6 +334,10 @@ describe("artifact server", () => {
     assert.equal(withNote.notes.at(-1).category, "question");
     assert.equal(withNote.notes.at(-1).checkpointId, "stage-1");
     assert.equal(withNote.notes.at(-1).resolved, false);
+    assert.equal(withNote.notes.at(-1).reviewState, undefined);
+    assert.equal(withNote.notes.at(-1).severity, undefined);
+    assert.equal(withNote.notes.at(-1).owner, undefined);
+    assert.equal(withNote.notes.at(-1).dueAt, undefined);
     assert.equal(withNote.history.at(-1).type, "note.added");
 
     const noteId = withNote.notes.at(-1).id;
@@ -361,7 +355,7 @@ describe("artifact server", () => {
     });
     assert.equal(reopened.notes.at(-1).resolved, false);
     assert.equal(reopened.notes.at(-1).resolvedAt, null);
-    assert.equal(reopened.notes.at(-1).reviewState, "open");
+    assert.equal(reopened.notes.at(-1).reviewState, undefined);
     assert.equal(reopened.history.at(-1).type, "note.reopened");
 
     const updatedNote = await injectJson({
@@ -793,11 +787,7 @@ describe("artifact server", () => {
       method: "GET",
       url: "/api/collections/metadata-upgrade/review-markdown"
     });
-    assert.equal(reviewMarkdown.statusCode, 200);
-    assert.match(reviewMarkdown.headers["content-type"], /text\/markdown/);
-    assert.match(reviewMarkdown.body, /# Metadata Upgrade Review 摘要/);
-    assert.match(reviewMarkdown.body, /- 待办：1/);
-    assert.match(reviewMarkdown.body, /最近待处理：待处理 \/ 高 \/ 风险：Risk needs mitigation\./);
+    assert.equal(reviewMarkdown.statusCode, 404);
 
     const weeklyReport = await app.inject({
       method: "GET",
@@ -810,15 +800,16 @@ describe("artifact server", () => {
     assert.match(weeklyReport.body, /Research Note/);
     assert.match(weeklyReport.body, /## 当前阻塞/);
     assert.match(weeklyReport.body, /Plan Note/);
+    assert.match(weeklyReport.body, /## 风险/);
+    assert.match(weeklyReport.body, /Risk needs mitigation\./);
+    assert.match(weeklyReport.body, /## 待办\/问题/);
     assert.match(weeklyReport.body, /## 下阶段计划/);
 
     const reportReview = await app.inject({
       method: "GET",
       url: "/api/reports/review?collection=metadata-upgrade"
     });
-    assert.equal(reportReview.statusCode, 200);
-    assert.match(reportReview.body, /# Metadata Upgrade PR Review 摘要/);
-    assert.match(reportReview.body, /Risk needs mitigation\./);
+    assert.equal(reportReview.statusCode, 404);
 
     const globalReport = await app.inject({
       method: "GET",
@@ -828,6 +819,7 @@ describe("artifact server", () => {
     assert.match(globalReport.body, /# 全局报告/);
     assert.match(globalReport.body, /## 项目集健康/);
     assert.match(globalReport.body, /Metadata Upgrade：阻塞/);
+    assert.match(globalReport.body, /待处理 Artifact/);
 
     const missingReport = await injectJson({
       method: "GET",
@@ -987,9 +979,9 @@ describe("artifact server", () => {
     assert.match(markdown.headers["content-type"], /text\/markdown/);
     assert.match(markdown.headers["content-disposition"], /export-plan-status\.md/);
     assert.match(markdown.body, /# Export Plan/);
-    assert.match(markdown.body, /Review 状态：已认可/);
+    assert.match(markdown.body, /未处理备注：1/);
     assert.match(markdown.body, /- \[x\] Stage 1/);
-    assert.match(markdown.body, /已认可 \/ 严重度 低/);
+    assert.match(markdown.body, /待处理 \/ 认可/);
     assert.match(markdown.body, /Looks good\./);
 
     const bundle = await injectJson({

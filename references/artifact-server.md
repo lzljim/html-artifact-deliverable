@@ -224,14 +224,13 @@ Artifacts can also declare their collection directly in `artifact.json`. The ser
 }
 ```
 
-Review comments are stored in the same `notes` array. Older notes with only `id`, `at`, and `text` remain valid; the server normalizes missing review fields when reading:
+Personal notes are stored in the `notes` array. Older notes with only `id`, `at`, and `text` remain valid; older review-oriented fields such as `reviewState`, `severity`, `owner`, and `dueAt` are still preserved when present, but new UI flows only create personal note fields:
 
 ```json
 {
   "id": "note-1779000000000",
   "at": "2026-05-17T11:00:00+08:00",
   "text": "阶段 1 需要补充验证截图",
-  "author": "reviewer name",
   "category": "question",
   "checkpointId": "phase-1",
   "resolved": false,
@@ -275,29 +274,32 @@ GET  /api/artifacts
 GET  /api/artifacts/search
 GET  /api/export
 POST /api/import
+GET  /api/reports/weekly
+GET  /api/reports/global
 GET  /api/collections
 GET  /api/collections/:id/markdown
-GET  /api/collections/:id/review-markdown
 GET  /api/artifacts/:id
 GET  /api/artifacts/:id/markdown
 GET  /api/artifacts/:id/export
 GET  /api/artifacts/:id/state
 PUT  /api/artifacts/:id/state
+PATCH /api/artifacts/:id/status
+PATCH /api/artifacts/:id/personal
+POST /api/artifacts/:id/activity/opened
+POST /api/artifacts/:id/checkpoints
 POST /api/artifacts/:id/checkpoints/:checkpointId/toggle
 POST /api/artifacts/:id/notes
 POST /api/artifacts/:id/notes/:noteId/resolve
 POST /api/artifacts/:id/notes/:noteId/reopen
 ```
 
-The dashboard groups collection artifacts and shows aggregate progress. Collections derive a health state from child artifacts: `healthy`, `review`, `risk`, or `blocked`. The collection area includes cards, sorting controls for latest update / health / completion rate / blocked count / unresolved comments, and a progress matrix where each artifact row shows stage completion chips plus risk/comment markers.
+The dashboard groups collection artifacts and shows aggregate progress. Collections derive a health state from child artifacts: `healthy`, `risk`, or `blocked`. The collection area includes cards, sorting controls for latest update / health / completion rate / blocked count / unresolved notes, and a progress matrix where each artifact row shows stage completion chips plus risk/note markers.
 
 Artifact lists are work-first: status groups render as blocked, in-progress, draft, done, archived, then unknown statuses. The sort selector applies inside those status groups, so "updated desc" means current work stays ahead while each group is ordered by latest update.
 
-It also includes a Review Dashboard that summarizes unresolved comments, risks, actions, blocked/risk items, and recently updated artifacts. Review cards act as quick filters through `review=open`, `review=risk`, `review=action`, `review=blocked`, and `review=recent`. The to-do/review queue is always visible, shows empty-state guidance when no work is pending, and sorts unresolved work by risk, action, question, and latest comment time.
+The dashboard also includes a personal task hub for current focus, common references, recently opened artifacts, blocked/pending work, and items ready to close or archive. Artifact cards expose personal actions such as pin, later, mark done, archive, quick note, and quick checkpoint.
 
-Collection-level review summaries are available through `GET /api/collections/:id/review-markdown`. This endpoint emits only unresolved review work, making it suitable for PR comments or chat follow-ups.
-
-The artifact detail page lets reviewers edit status, toggle checkpoints, maintain checkpoint notes, add artifact comments, filter comments by phase, resolve or reopen comments, and copy or download the current state or comment summary as JSON/Markdown.
+The artifact detail page lets a personal user edit status, toggle checkpoints, maintain checkpoint notes, add personal notes, filter notes by category or phase, resolve or reopen notes, mark an artifact as common reference material, and copy or download the current state or note summary as JSON/Markdown.
 
 Artifact-level export endpoints:
 

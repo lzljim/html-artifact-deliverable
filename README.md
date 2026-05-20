@@ -1,6 +1,6 @@
 # HTML Artifact Deliverable
 
-把较大的 AI 交付物发布成本地 HTML artifact 服务，便于查看、分享、阶段跟踪、评论评审和项目集管理。
+把较大的 AI 交付物发布成本地 HTML artifact 服务，便于查看、分享、阶段跟踪、个人备注和项目集管理。
 
 ## 安装
 
@@ -105,17 +105,17 @@ npm run check
 
 ## 状态、归档和导出
 
-详情页可以修改状态、勾选 checkpoints、保存阶段备注、记录评论，并复制或下载当前状态报告。首页提供 Review Dashboard，用来快速发现需要处理的 artifact。
+详情页可以修改状态、勾选 checkpoints、保存阶段备注、记录个人备注，并复制或下载当前状态报告。首页按个人任务中枢组织 artifact，用来快速判断当前重点、最近继续、阻塞/待处理和可收尾内容。
 
 - `archived` 状态表示已归档。归档 artifact 默认不出现在工作台搜索结果里，但直接 URL、项目集和显式“包含归档 / 只看归档”筛选仍可访问。
-- Review Dashboard 汇总未解决评论、风险、待办、阻塞/风险项、最近 7 天更新，并支持点击这些指标快速筛选列表。
-- Review Dashboard 会固定展示“待办 / Review 队列”，按风险、待办、问题和最近评论排序；没有待办时也会提示如何添加待办评论。
-- Artifact 卡片和项目集卡片会显示未解决评论、风险、待办、最近未解决评论等 review 信息，减少逐个打开页面查看的成本。
+- 个人任务中枢固定展示“当前重点”“常用资料”“最近继续”“阻塞/待处理”“可收尾/可归档”。
+- Artifact 卡片提供置顶、稍后、设为资料、完成、归档、快速备注和新增阶段等个人快捷动作。
+- Artifact 卡片和项目集卡片会显示未处理备注、风险、待办和最近备注，减少逐个打开页面查看的成本。
 - 交付物列表默认按工作状态优先展示：阻塞、进行中、草稿在前，已完成和已归档在后；排序下拉只影响每个状态组内部的顺序。
-- 项目集会派生健康状态：正常、需 review、有风险、阻塞；首页提供项目集进度矩阵，按 artifact 行展示阶段完成情况和风险/评论标记。
-- 项目集可按最近更新、健康状态、完成率、阻塞数、未解决评论排序，方便先处理最需要 review 的项目集。
-- 项目集卡片的“复制 Review”会导出只包含未解决项、风险和待办的 Markdown 摘要。
-- `GET /api/artifacts/<id>/markdown` 会从 `state.json` 生成可贴到 PR / 周报的 Markdown 状态报告。
+- 项目集会派生健康状态：正常、有风险、阻塞；首页提供项目集进度矩阵，按 artifact 行展示阶段完成情况和风险/备注标记。
+- 项目集可按最近更新、健康状态、完成率、阻塞数、未处理备注排序，方便先处理最需要推进的项目集。
+- 报告中心可以复制项目集周报和全局报告，使用个人待办/风险措辞，不再提供协作型 Review 摘要。
+- `GET /api/artifacts/<id>/markdown` 会从 `state.json` 生成可贴到周报或个人记录的 Markdown 状态报告。
 - `GET /api/artifacts/<id>/export` 会导出包含 `artifact.json` 视图、`state.json` 和 `index.html` 内容的 JSON 迁移包。
 - 首页右上角“导出全部”会请求 `GET /api/export`，一次性导出 `collection.json` 和所有 artifact 的 HTML、元数据、状态。
 - 首页右上角“导入全部”可以选择上述 JSON 包，写入当前 artifact root。只读 token 不能导入。
@@ -141,7 +141,7 @@ node scripts/import-artifact-bundle.mjs --bundle html-artifacts-2026-05-17.json
 
 - `index.html`：原始 HTML artifact 副本。
 - `artifact.json`：标题、类型、标签、来源、项目集等稳定元数据。
-- `state.json`：状态、checkpoints、评论、历史记录等可变数据。
+- `state.json`：状态、checkpoints、个人备注、历史记录等可变数据。
 - `collection.json`：项目集定义，用于把多个 artifact 归为同一个主题。
 
 ## 端口占用

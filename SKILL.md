@@ -86,10 +86,10 @@ Default behavior:
 - Artifact root: `~/.codex/html-artifacts`
 - Host: `127.0.0.1`
 - Port: `8787`
-- Detail pages provide status editing, checkpoint toggles, per-checkpoint notes, reviewer comments, resolve/reopen review flow, and JSON/Markdown status export.
+- Detail pages provide status editing, checkpoint toggles, per-checkpoint notes, personal notes, resolve/reopen handling, common-reference marking, and JSON/Markdown status export.
 - The dashboard can group related artifacts into collections with aggregate progress and collection-level Markdown export.
-- The dashboard includes a Review Dashboard for unresolved comments, risks, actions, blocked/risk items, recent updates, and a persistent to-do/review queue with clear empty-state guidance and click-to-filter review shortcuts.
-- Collections derive a health state (healthy, needs review, risk, or blocked) and the dashboard includes a collection progress matrix plus sorting by health, completion rate, blocked count, and unresolved comments.
+- The dashboard includes a personal task hub for current focus, common references, recently opened artifacts, blocked/pending work, and items ready to close or archive.
+- Collections derive a health state (healthy, risk, or blocked) and the dashboard includes a collection progress matrix plus sorting by health, completion rate, blocked count, and unresolved notes.
 - Archived artifacts use `state.status = "archived"`; they are hidden from default dashboard search but remain available through direct URLs, collections, and explicit archive filters.
 - Single artifacts can be exported as Markdown status reports or JSON migration bundles through the detail page and API.
 - The dashboard provides one-click full export through `GET /api/export` and full import through `POST /api/import`; restore from CLI with `node scripts/import-artifact-bundle.mjs --bundle <file.json>`.

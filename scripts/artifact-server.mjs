@@ -30,20 +30,20 @@ const TYPE_LABELS = {
 };
 
 const REVIEW_STATE_LABELS = {
-  clean: "无未解决项",
-  "needs-review": "待 Review",
-  "changes-requested": "需修改",
-  approved: "已认可",
+  clean: "无未处理项",
+  "needs-review": "待处理",
+  "changes-requested": "需处理",
+  approved: "已处理",
   blocked: "阻塞"
 };
 
 const NOTE_REVIEW_STATE_LABELS = {
   open: "待处理",
   "in-progress": "处理中",
-  "changes-requested": "需修改",
-  approved: "已认可",
+  "changes-requested": "需处理",
+  approved: "已处理",
   blocked: "阻塞",
-  resolved: "已解决"
+  resolved: "已处理"
 };
 
 const SEVERITY_LABELS = {
@@ -108,11 +108,9 @@ Routes:
   GET  /api/export
   POST /api/import
   GET  /api/reports/weekly
-  GET  /api/reports/review
   GET  /api/reports/global
   GET  /api/collections
   GET  /api/collections/:id/markdown
-  GET  /api/collections/:id/review-markdown
   GET  /api/artifacts/:id
   GET  /api/artifacts/:id/markdown
   GET  /api/artifacts/:id/export
@@ -161,7 +159,7 @@ function statusLabel(status) {
 }
 
 function reviewStateLabel(reviewState) {
-  return REVIEW_STATE_LABELS[reviewState] || reviewState || "无未解决项";
+  return REVIEW_STATE_LABELS[reviewState] || reviewState || "无未处理项";
 }
 
 function noteReviewStateLabel(reviewState) {
@@ -475,29 +473,12 @@ function createStore(root) {
     return collectionMarkdown(collection);
   }
 
-  async function getCollectionReviewMarkdown(id) {
-    const collection = (await listCollections()).find((item) => item.id === id);
-    if (!collection) {
-      return null;
-    }
-    return collectionReviewMarkdown(collection);
-  }
-
   async function getWeeklyReportMarkdown(collectionId) {
     const collection = (await listCollections()).find((item) => item.id === collectionId);
     if (!collection) {
       return null;
     }
     return collectionWeeklyReportMarkdown(collection);
-  }
-
-  async function getReviewReportMarkdown(collectionId = "") {
-    const collections = await listCollections();
-    if (collectionId) {
-      const collection = collections.find((item) => item.id === collectionId);
-      return collection ? reviewReportMarkdown([collection], `${collection.title} PR Review 摘要`) : null;
-    }
-    return reviewReportMarkdown(collections, "PR Review 摘要");
   }
 
   async function getGlobalReportMarkdown() {
@@ -591,30 +572,6 @@ function createStore(root) {
       const artifactIds = new Set((collection?.artifacts || []).map((artifact) => artifact.id));
       items = items.filter((artifact) => artifactIds.has(artifact.id));
     }
-  if (filters.review === "open") {
-    items = items.filter((artifact) => artifact.openNoteCount > 0);
-  } else if (filters.review === "risk") {
-    items = items.filter((artifact) => artifact.riskNoteCount > 0);
-  } else if (filters.review === "action") {
-    items = items.filter((artifact) => artifact.actionNoteCount > 0);
-  } else if (filters.review === "blocked") {
-    items = items.filter((artifact) => artifact.reviewState === "blocked" || artifact.blockedOrRisk);
-  } else if (filters.review === "changes-requested") {
-    items = items.filter((artifact) => artifact.reviewState === "changes-requested");
-  } else if (filters.review === "needs-review") {
-    items = items.filter((artifact) => artifact.reviewState === "needs-review");
-  } else if (filters.review === "approved") {
-    items = items.filter((artifact) => artifact.reviewState === "approved");
-  } else if (filters.review === "clean") {
-    items = items.filter((artifact) => artifact.reviewState === "clean");
-  } else if (filters.review === "overdue") {
-    items = items.filter((artifact) => artifact.overdueNoteCount > 0);
-  } else if (filters.review === "recent") {
-      const since = Date.now() - 7 * 24 * 60 * 60 * 1000;
-      items = items.filter((artifact) => Date.parse(artifact.updatedAt || artifact.lastNoteAt || "") >= since
-        || Date.parse(artifact.lastNoteAt || "") >= since);
-    }
-
     items = items.slice().sort(compareArtifacts(filters.sort || "updated-desc"));
     return {
       items,
@@ -891,10 +848,6 @@ function createStore(root) {
       author: String(note?.author || "").trim(),
       category: normalizeNoteCategory(note?.category),
       checkpointId: String(note?.checkpointId || "").trim(),
-      reviewState: normalizeNoteReviewState(note?.reviewState, false, note?.category),
-      severity: normalizeSeverity(note?.severity, note?.category, note?.reviewState),
-      owner: String(note?.owner || "").trim(),
-      dueAt: normalizeDueAt(note?.dueAt),
       resolved: false,
       resolvedAt: null
     };
@@ -920,7 +873,9 @@ function createStore(root) {
 
     note.resolved = Boolean(resolved);
     note.resolvedAt = note.resolved ? new Date().toISOString() : null;
-    note.reviewState = note.resolved ? "resolved" : "open";
+    if (Object.hasOwn(note, "reviewState")) {
+      note.reviewState = note.resolved ? "resolved" : "open";
+    }
     state.history.push({
       at: new Date().toISOString(),
       type: note.resolved ? "note.resolved" : "note.reopened",
@@ -971,8 +926,10 @@ function createStore(root) {
       note.dueAt = normalizeDueAt(patch.dueAt);
     }
 
-    note.resolved = note.reviewState === "resolved";
-    note.resolvedAt = note.resolved ? note.resolvedAt || new Date().toISOString() : null;
+    if (Object.hasOwn(patch || {}, "reviewState")) {
+      note.resolved = note.reviewState === "resolved";
+      note.resolvedAt = note.resolved ? note.resolvedAt || new Date().toISOString() : null;
+    }
     state.history.push({
       at: new Date().toISOString(),
       type: "note.updated",
@@ -1046,9 +1003,7 @@ function createStore(root) {
     searchArtifacts,
     listCollections,
     getCollectionMarkdown,
-    getCollectionReviewMarkdown,
     getWeeklyReportMarkdown,
-    getReviewReportMarkdown,
     getGlobalReportMarkdown,
     deleteCollection,
     getArtifact,
@@ -1357,8 +1312,7 @@ function buildCollections(configs, artifacts) {
     const riskArtifactCount = collectionArtifacts.filter((item) => item.riskNoteCount > 0 || item.reviewState === "changes-requested").length;
     const health = collectionHealth({
       blockedArtifactCount,
-      riskArtifactCount,
-      reviewArtifactCount
+      riskArtifactCount
     });
     const updatedAt = collection.updatedAt
       || collectionArtifacts.map((item) => item.updatedAt).filter(Boolean).sort().at(-1)
@@ -1394,7 +1348,7 @@ function buildCollections(configs, artifacts) {
       || left.title.localeCompare(right.title, "zh-CN"));
 }
 
-function collectionHealth({ blockedArtifactCount, riskArtifactCount, reviewArtifactCount }) {
+function collectionHealth({ blockedArtifactCount, riskArtifactCount }) {
   if (blockedArtifactCount > 0) {
     return {
       status: "blocked",
@@ -1407,13 +1361,6 @@ function collectionHealth({ blockedArtifactCount, riskArtifactCount, reviewArtif
       status: "risk",
       label: "有风险",
       tone: "risk"
-    };
-  }
-  if (reviewArtifactCount > 0) {
-    return {
-      status: "review",
-      label: "需 review",
-      tone: "review"
     };
   }
   return {
@@ -1432,7 +1379,7 @@ function collectionMarkdown(collection) {
     `- Artifact 数量：${collection.artifactCount}`,
     `- 阶段进度：${collection.checkpointCount ? `${collection.doneCheckpointCount}/${collection.checkpointCount}` : "0/0"}`,
     `- 项目集健康：${collection.healthLabel}`,
-    `- 评论数量：${collection.noteCount}`,
+    `- 备注数量：${collection.noteCount}`,
     ""
   ].filter((line, index, array) => line || array[index - 1] !== "");
 
@@ -1445,45 +1392,9 @@ function collectionMarkdown(collection) {
     lines.push(`- 类型：${artifact.typeLabel}`);
     lines.push(`- 状态：${artifact.statusLabel}`);
     lines.push(`- 阶段进度：${progress}`);
-    lines.push(`- 评论数量：${artifact.noteCount}`);
+    lines.push(`- 备注数量：${artifact.noteCount}`);
     if (artifact.openNoteCount || artifact.riskNoteCount || artifact.actionNoteCount) {
-      lines.push(`- 待处理 Review：${artifact.openNoteCount} 条未解决，${artifact.riskNoteCount} 个风险，${artifact.actionNoteCount} 个待办`);
-    }
-    lines.push("");
-  }
-
-  return `${lines.join("\n").replace(/\n{3,}/g, "\n\n").trim()}\n`;
-}
-
-function collectionReviewMarkdown(collection) {
-  const reviewArtifacts = collection.artifacts
-    .filter((artifact) => artifact.needsReview || artifact.blockedOrRisk)
-    .sort(compareArtifactsForReview);
-  const lines = [
-    `# ${collection.title} Review 摘要`,
-    "",
-    `- 待 Review Artifact：${collection.reviewArtifactCount}`,
-    `- 未解决评论：${collection.openNoteCount}`,
-    `- 风险：${collection.riskNoteCount}`,
-    `- 待办：${collection.actionNoteCount}`,
-    ""
-  ];
-
-  if (!reviewArtifacts.length) {
-    lines.push("暂无未解决 review 项。", "");
-    return `${lines.join("\n").replace(/\n{3,}/g, "\n\n").trim()}\n`;
-  }
-
-  for (const artifact of reviewArtifacts) {
-    lines.push(`## ${artifact.title}`, "");
-    lines.push(`- ID：${artifact.id}`);
-    lines.push(`- 状态：${artifact.statusLabel}`);
-    lines.push(`- Review 状态：${artifact.reviewStateLabel}`);
-    lines.push(`- 未解决：${artifact.openNoteCount}，需修改：${artifact.changesRequestedNoteCount}，阻塞：${artifact.blockedNoteCount}，风险：${artifact.riskNoteCount}，待办：${artifact.actionNoteCount}，逾期：${artifact.overdueNoteCount}`);
-    if (artifact.latestOpenNote) {
-      const owner = artifact.latestOpenNote.owner ? `，负责人：${artifact.latestOpenNote.owner}` : "";
-      const dueAt = artifact.latestOpenNote.dueAt ? `，到期：${artifact.latestOpenNote.dueAt}` : "";
-      lines.push(`- 最近待处理：${artifact.latestOpenNote.reviewStateLabel} / ${artifact.latestOpenNote.severityLabel} / ${noteCategoryLabel(artifact.latestOpenNote.category)}：${artifact.latestOpenNote.text}${owner}${dueAt}`);
+      lines.push(`- 待处理备注：${artifact.openNoteCount} 条未处理，${artifact.riskNoteCount} 个风险，${artifact.actionNoteCount} 个待办`);
     }
     lines.push("");
   }
@@ -1499,11 +1410,11 @@ function collectionWeeklyReportMarkdown(collection) {
   const blocked = collection.artifacts
     .filter((artifact) => artifact.status === "blocked" || artifact.reviewState === "blocked")
     .sort(compareArtifactsForReview);
-  const review = collection.artifacts
-    .filter((artifact) => artifact.needsReview)
-    .sort(compareArtifactsForReview);
   const risk = collection.artifacts
     .filter((artifact) => artifact.riskNoteCount > 0 || artifact.reviewState === "changes-requested")
+    .sort(compareArtifactsForReview);
+  const pending = collection.artifacts
+    .filter((artifact) => artifact.openNoteCount > 0 && artifact.status !== "blocked" && artifact.riskNoteCount === 0)
     .sort(compareArtifactsForReview);
   const next = collection.artifacts
     .filter((artifact) => ["draft", "in-progress"].includes(artifact.status) && artifact.reviewState !== "blocked")
@@ -1517,46 +1428,15 @@ function collectionWeeklyReportMarkdown(collection) {
     `- 项目集健康：${collection.healthLabel}`,
     `- Artifact：${collection.artifactCount}`,
     `- 阶段进度：${progress}`,
-    `- 未解决评论：${collection.openNoteCount}`,
+    `- 未处理备注：${collection.openNoteCount}`,
     ""
   ];
 
   appendReportSection(lines, "本周完成", completed, reportArtifactLine);
-  appendReportSection(lines, "当前阻塞", blocked, reviewArtifactLine);
-  appendReportSection(lines, "待 Review", review, reviewArtifactLine);
-  appendReportSection(lines, "风险", risk, reviewArtifactLine);
+  appendReportSection(lines, "当前阻塞", blocked, personalWorkArtifactLine);
+  appendReportSection(lines, "风险", risk, personalWorkArtifactLine);
+  appendReportSection(lines, "待办/问题", pending, personalWorkArtifactLine);
   appendReportSection(lines, "下阶段计划", next, reportArtifactLine);
-
-  return normalizeMarkdown(lines);
-}
-
-function reviewReportMarkdown(collections, title) {
-  const sections = collections
-    .map((collection) => ({
-      collection,
-      artifacts: collection.artifacts
-        .filter((artifact) => artifact.openNoteCount > 0 && (artifact.riskNoteCount > 0 || artifact.actionNoteCount > 0 || artifact.questionNoteCount > 0 || artifact.blockedNoteCount > 0 || artifact.changesRequestedNoteCount > 0))
-        .sort(compareArtifactsForReview)
-    }))
-    .filter((section) => section.artifacts.length);
-  const lines = [
-    `# ${title}`,
-    "",
-    `- 项目集：${collections.length}`,
-    `- 未解决项目集：${sections.length}`,
-    `- 未解决 Artifact：${sections.reduce((sum, section) => sum + section.artifacts.length, 0)}`,
-    ""
-  ];
-
-  if (!sections.length) {
-    lines.push("暂无未解决问题、待办或风险。", "");
-    return normalizeMarkdown(lines);
-  }
-
-  for (const section of sections) {
-    lines.push(`## ${section.collection.title}`, "");
-    appendReportItems(lines, section.artifacts, reviewArtifactLine);
-  }
 
   return normalizeMarkdown(lines);
 }
@@ -1573,8 +1453,8 @@ function globalReportMarkdown(collections, artifacts) {
     `- 项目集：${collections.length}`,
     `- 活跃 Artifact：${active.length}`,
     `- 阻塞 Artifact：${active.filter((artifact) => artifact.status === "blocked" || artifact.reviewState === "blocked").length}`,
-    `- 待 Review Artifact：${active.filter((artifact) => artifact.needsReview).length}`,
-    `- 未解决评论：${active.reduce((sum, artifact) => sum + artifact.openNoteCount, 0)}`,
+    `- 待处理 Artifact：${active.filter((artifact) => artifact.openNoteCount > 0).length}`,
+    `- 未处理备注：${active.reduce((sum, artifact) => sum + artifact.openNoteCount, 0)}`,
     ""
   ];
 
@@ -1586,7 +1466,7 @@ function globalReportMarkdown(collections, artifacts) {
       const progress = collection.checkpointCount
         ? `${collection.doneCheckpointCount}/${collection.checkpointCount} (${collection.progressPercent}%)`
         : "无阶段";
-      lines.push(`- ${collection.title}：${collection.healthLabel}，${collection.artifactCount} 个 artifact，阶段 ${progress}，未解决 ${collection.openNoteCount}`);
+      lines.push(`- ${collection.title}：${collection.healthLabel}，${collection.artifactCount} 个 artifact，阶段 ${progress}，未处理 ${collection.openNoteCount}`);
     }
     lines.push("");
   }
@@ -1622,11 +1502,11 @@ function reportArtifactLine(artifact) {
   return `- ${artifact.title}：${artifact.statusLabel}，${progress}，更新 ${formatIsoDate(artifact.updatedAt)}`;
 }
 
-function reviewArtifactLine(artifact) {
+function personalWorkArtifactLine(artifact) {
   const latest = artifact.latestOpenNote
-    ? `；最近：${artifact.latestOpenNote.reviewStateLabel} / ${artifact.latestOpenNote.severityLabel || "无严重度"} / ${noteCategoryLabel(artifact.latestOpenNote.category)}：${artifact.latestOpenNote.text}`
+    ? `；最近：${noteCategoryLabel(artifact.latestOpenNote.category)}：${artifact.latestOpenNote.text}`
     : "";
-  return `- ${artifact.title}：${artifact.reviewStateLabel}，未解决 ${artifact.openNoteCount}，风险 ${artifact.riskNoteCount}，待办 ${artifact.actionNoteCount}，阻塞 ${artifact.blockedNoteCount}${latest}`;
+  return `- ${artifact.title}：${artifact.statusLabel}，未处理 ${artifact.openNoteCount}，风险 ${artifact.riskNoteCount}，待办 ${artifact.actionNoteCount}${latest}`;
 }
 
 function formatIsoDate(value) {
@@ -1672,12 +1552,11 @@ function artifactStateMarkdown(artifact, state) {
     `- ID：${artifact.id}`,
     `- 类型：${artifact.typeLabel}`,
     `- 状态：${statusLabel(state.status)}`,
-    `- Review 状态：${artifact.reviewStateLabel}`,
-    `- 最高严重度：${artifact.highestSeverityLabel || "无"}`,
-    `- 未关闭 Review：${artifact.openNoteCount}`,
-    `- 逾期项：${artifact.overdueNoteCount}`,
+    `- 未处理备注：${artifact.openNoteCount}`,
+    `- 风险：${artifact.riskNoteCount}`,
+    `- 待办：${artifact.actionNoteCount}`,
     `- 阶段进度：${state.checkpoints.length ? `${state.checkpoints.filter((item) => item.done).length}/${state.checkpoints.length}` : "0/0"}`,
-    `- 评论数量：${state.notes.length}`,
+    `- 备注数量：${state.notes.length}`,
     ""
   ];
 
@@ -1688,7 +1567,7 @@ function artifactStateMarkdown(artifact, state) {
       lines.push(`- [${item.done ? "x" : " "}] ${item.title}${doneAt}`);
       const checkpointReview = artifact.checkpoints.find((checkpoint) => checkpoint.id === item.id)?.review;
       if (checkpointReview && checkpointReview.reviewState !== "clean") {
-        lines.push(`  - Review：${checkpointReview.reviewStateLabel}，未关闭 ${checkpointReview.openNoteCount}`);
+        lines.push(`  - 待处理备注：${checkpointReview.openNoteCount}`);
       }
       if (item.note) {
         lines.push(`  - 备注：${item.note}`);
@@ -1698,7 +1577,7 @@ function artifactStateMarkdown(artifact, state) {
   }
 
   if (state.notes.length) {
-    lines.push("## 评论", "");
+    lines.push("## 个人备注", "");
     lines.push(...commentsMarkdownLines(state));
     lines.push("");
   }
@@ -1734,12 +1613,8 @@ function commentsMarkdownLines(state) {
     lines.push(`### ${checkpointId ? checkpointTitles.get(checkpointId) || checkpointId : "全局"}`);
     for (const item of items) {
       const meta = [
-        item.resolved ? "已解决" : "未解决",
-        noteReviewStateLabel(item.reviewState),
-        severityLabel(item.severity) ? `严重度 ${severityLabel(item.severity)}` : "",
+        isReviewClosed(item) ? "已处理" : "待处理",
         noteCategoryLabel(item.category),
-        item.owner ? `负责人 ${item.owner}` : "",
-        item.dueAt ? `到期 ${item.dueAt}` : "",
         item.author || "",
         item.at || ""
       ].filter(Boolean).join(" / ");
@@ -1894,20 +1769,29 @@ function normalizeNote(item) {
   const category = normalizeNoteCategory(item?.category);
   const resolved = Boolean(item?.resolved) || item?.reviewState === "resolved";
   const reviewState = normalizeNoteReviewState(item?.reviewState, resolved, category);
-  return {
+  const note = {
     id: String(item?.id || `note-${Date.now()}`),
     at: item?.at || null,
     text: String(item?.text || ""),
     author: String(item?.author || ""),
     category,
     checkpointId: String(item?.checkpointId || ""),
-    reviewState,
-    severity: normalizeSeverity(item?.severity, category, reviewState),
-    owner: String(item?.owner || ""),
-    dueAt: normalizeDueAt(item?.dueAt),
     resolved,
     resolvedAt: item?.resolvedAt || null
   };
+  if (Object.hasOwn(item || {}, "reviewState")) {
+    note.reviewState = reviewState;
+  }
+  if (Object.hasOwn(item || {}, "severity")) {
+    note.severity = normalizeSeverity(item?.severity, category, reviewState);
+  }
+  if (Object.hasOwn(item || {}, "owner")) {
+    note.owner = String(item?.owner || "");
+  }
+  if (Object.hasOwn(item || {}, "dueAt")) {
+    note.dueAt = normalizeDueAt(item?.dueAt);
+  }
+  return note;
 }
 
 function compareArtifacts(sort) {
@@ -2063,7 +1947,6 @@ function getSearchFilters(query) {
     tag: query.tag,
     collection: query.collection,
     archived: query.archived,
-    review: query.review,
     sort: query.sort
   };
 }
@@ -2114,8 +1997,6 @@ function dashboardPage(root) {
       <section id="organizeHub" class="personal-hub" aria-label="整理视图"></section>
 
       <section id="reportCenter" class="review-dashboard" aria-label="报告中心"></section>
-
-      <section id="reviewDashboard" class="review-dashboard" aria-label="Review Dashboard"></section>
 
       <section id="collections" class="collections" aria-label="项目集"></section>
 
@@ -2178,7 +2059,6 @@ function dashboardPage(root) {
         quickCollection: document.querySelector("#quickCollection"),
         quickCheckpoint: document.querySelector("#quickCheckpoint"),
         reportCenter: document.querySelector("#reportCenter"),
-        reviewDashboard: document.querySelector("#reviewDashboard"),
         collections: document.querySelector("#collections"),
         collectionMatrix: document.querySelector("#collectionMatrix"),
         list: document.querySelector("#list"),
@@ -2201,7 +2081,6 @@ function dashboardPage(root) {
       const authToken = new URLSearchParams(location.search).get("token") || "";
       const initialParams = new URLSearchParams(location.search);
       let activeCollection = initialParams.get("collection") || "";
-      let activeReviewFilter = initialParams.get("review") || "";
       let collectionSort = "updated-desc";
       const statusGroupOrder = ["blocked", "in-progress", "draft", "done", "archived"];
       document.querySelector("#exportAll").href = withAuthPath("/api/export");
@@ -2328,7 +2207,8 @@ function dashboardPage(root) {
             "更新于 " + formatDate(item.updatedAt)
           ].filter(Boolean).join(" · ");
         }
-        return item.statusLabel + " · " + (item.reviewStateLabel || "无未解决项");
+        const noteText = item.openNoteCount ? "未处理 " + item.openNoteCount : "无未处理备注";
+        return item.statusLabel + " · " + noteText;
       }
 
       function renderOrganizeHub(stats) {
@@ -2410,7 +2290,7 @@ function dashboardPage(root) {
           <div class="section-head">
             <div>
               <h2>报告中心</h2>
-              <p>一键复制周报、PR Review 摘要和全局健康报告。</p>
+              <p>一键复制项目集周报和全局报告。</p>
             </div>
           </div>
           <div class="report-actions">
@@ -2418,101 +2298,8 @@ function dashboardPage(root) {
               \${options}
             </select>
             <button type="button" data-report-kind="weekly" \${collectionResult.length ? "" : "disabled"}>复制项目集周报</button>
-            <button type="button" data-report-kind="review">复制 PR Review 摘要</button>
             <button type="button" data-report-kind="global">复制全局报告</button>
           </div>
-        \`;
-      }
-
-      function renderReviewDashboard(stats) {
-        const filters = [
-          ["open", "未解决评论", stats.openNotes],
-          ["needs-review", "待 Review", stats.needsReviewArtifacts],
-          ["changes-requested", "需修改", stats.changesRequestedArtifacts],
-          ["overdue", "逾期", stats.overdueNotes],
-          ["risk", "风险", stats.riskNotes],
-          ["action", "待办入口", stats.actionNotes],
-          ["blocked", "阻塞/风险项", stats.blockedOrRisk],
-          ["approved", "已认可", stats.approvedArtifacts],
-          ["recent", "最近 7 天更新", stats.recentUpdated]
-        ];
-        elements.reviewDashboard.innerHTML = \`
-          <div class="section-head">
-            <div>
-              <h2>Review Dashboard</h2>
-              <p>优先处理阻塞、需修改、逾期、风险和待办项。</p>
-            </div>
-            \${activeReviewFilter ? '<button id="clearReviewFilter" type="button">清除 Review 筛选</button>' : ""}
-          </div>
-          <div class="review-cards">
-            <article class="review-card">
-              <span>待 Review Artifact</span>
-              <strong>\${escapeHtml(stats.reviewArtifacts)}</strong>
-              <small>\${escapeHtml(stats.openNotes)} 条未解决评论</small>
-            </article>
-            \${filters.map(([value, label, count]) => \`
-              <button class="review-card \${activeReviewFilter === value ? "active" : ""}" type="button" data-review-filter="\${escapeHtml(value)}">
-                <span>\${escapeHtml(label)}</span>
-                <strong>\${escapeHtml(count)}</strong>
-                <small>\${activeReviewFilter === value ? "当前筛选" : "点击筛选"}</small>
-              </button>
-            \`).join("")}
-          </div>
-          \${renderReviewQueue(stats)}
-        \`;
-      }
-
-      function renderReviewQueue(stats) {
-        const queue = (searchResult?.items || [])
-          .filter((artifact) => artifact.needsReview || artifact.blockedOrRisk)
-          .slice()
-          .sort((left, right) => (right.reviewPriority || 0) - (left.reviewPriority || 0)
-            || String(right.latestOpenNote?.at || right.lastNoteAt || right.updatedAt || "").localeCompare(String(left.latestOpenNote?.at || left.lastNoteAt || left.updatedAt || "")))
-          .slice(0, 6);
-        const queueTitle = activeReviewFilter === "action" ? "待办队列" : "待办 / Review 队列";
-        const queueHint = activeReviewFilter === "action"
-          ? "只显示未解决待办评论"
-          : "按阻塞、需修改、严重度、逾期和最近评论排序";
-        if (!queue.length) {
-          const emptyText = activeReviewFilter === "action"
-            ? "暂无待办。进入 artifact 详情页添加“待办”类型评论后，会出现在这里。"
-            : "暂无待办或未解决 review 项。添加“待办 / 风险 / 问题”类型评论后，会出现在这里。";
-          return \`
-            <div class="review-queue">
-              <div class="review-queue-head">
-                <h3>\${escapeHtml(queueTitle)}</h3>
-                <span>\${escapeHtml(queueHint)}</span>
-              </div>
-              <div class="empty compact">\${escapeHtml(emptyText)}</div>
-            </div>
-          \`;
-        }
-        return \`
-          <div class="review-queue">
-            <div class="review-queue-head">
-              <h3>\${escapeHtml(queueTitle)}</h3>
-              <span>\${escapeHtml(queueHint)}</span>
-            </div>
-            <div class="queue-list">
-              \${queue.map(renderQueueItem).join("")}
-            </div>
-          </div>
-        \`;
-      }
-
-      function renderQueueItem(artifact) {
-        const note = artifact.latestOpenNote;
-        const noteText = note
-          ? [note.reviewStateLabel, note.severityLabel, noteCategoryLabel(note.category)].filter(Boolean).join(" / ") + "：" + note.text
-          : (artifact.status === "blocked" ? "当前处于阻塞状态" : artifact.reviewStateLabel);
-        const dueText = note?.dueAt ? " · 到期 " + note.dueAt + (note.overdue ? "（逾期）" : "") : "";
-        const ownerText = note?.owner ? " · 负责人 " + note.owner : "";
-        return \`
-          <a class="queue-item" href="\${withAuthPath("/artifacts/" + encodeURIComponent(artifact.id))}">
-            <strong>\${escapeHtml(artifact.title)}</strong>
-            <span>\${escapeHtml(noteText)}</span>
-            <small>\${escapeHtml(artifact.reviewStateLabel)} · 未解决 \${escapeHtml(artifact.openNoteCount || 0)} · 需修改 \${escapeHtml(artifact.changesRequestedNoteCount || 0)} · 逾期 \${escapeHtml(artifact.overdueNoteCount || 0)}\${escapeHtml(ownerText)}\${escapeHtml(dueText)}</small>
-          </a>
         \`;
       }
 
@@ -2596,7 +2383,7 @@ function dashboardPage(root) {
                   <option value="health" \${collectionSort === "health" ? "selected" : ""}>健康状态</option>
                   <option value="progress" \${collectionSort === "progress" ? "selected" : ""}>完成率</option>
                   <option value="blocked" \${collectionSort === "blocked" ? "selected" : ""}>阻塞数</option>
-                  <option value="open-notes" \${collectionSort === "open-notes" ? "selected" : ""}>未解决评论</option>
+                  <option value="open-notes" \${collectionSort === "open-notes" ? "selected" : ""}>未处理备注</option>
                 </select>
               </label>
               \${activeCollection ? '<button id="clearCollection" type="button">显示全部</button>' : ""}
@@ -2622,19 +2409,17 @@ function dashboardPage(root) {
                 <span class="health" data-health="\${escapeHtml(collection.healthStatus)}">\${escapeHtml(collection.healthLabel)}</span>
               </div>
               <p>\${escapeHtml(collection.description || progress)}</p>
-              <small>\${collection.artifactCount} 个 artifact · \${escapeHtml(progress)} · \${collection.noteCount} 条评论</small>
+              <small>\${collection.artifactCount} 个 artifact · \${escapeHtml(progress)} · \${collection.noteCount} 条备注</small>
               <div class="review-mini">
                 <span>阻塞 \${escapeHtml(collection.blockedArtifactCount || 0)}</span>
                 <span>风险项 \${escapeHtml(collection.riskArtifactCount || 0)}</span>
-                <span>待 Review \${escapeHtml(collection.reviewArtifactCount || 0)}</span>
-                <span>未解决 \${escapeHtml(collection.openNoteCount || 0)}</span>
+                <span>未处理 \${escapeHtml(collection.openNoteCount || 0)}</span>
                 <span>风险 \${escapeHtml(collection.riskNoteCount || 0)}</span>
                 <span>待办 \${escapeHtml(collection.actionNoteCount || 0)}</span>
               </div>
             </div>
             <div class="collection-actions">
               <button type="button" data-collection-id="\${escapeHtml(collection.id)}">复制摘要</button>
-              <button type="button" data-collection-review-id="\${escapeHtml(collection.id)}">复制 Review</button>
               <button type="button" data-collection-delete-id="\${escapeHtml(collection.id)}" data-collection-title="\${escapeHtml(collection.title)}">解散</button>
             </div>
           </article>
@@ -2651,14 +2436,14 @@ function dashboardPage(root) {
           <div class="collection-matrix" aria-label="项目集进度矩阵">
             <div class="matrix-title">
               <h3>项目集进度矩阵</h3>
-              <span>Artifact 行 · 阶段列 · 风险/评论标记</span>
+              <span>Artifact 行 · 阶段列 · 风险/备注标记</span>
             </div>
             <div class="matrix-grid">
               <div class="matrix-row matrix-head">
                 <span>项目集健康</span>
                 <span>Artifact</span>
                 <span>阶段</span>
-                <span>Review</span>
+                <span>待处理</span>
               </div>
               \${rows.join("")}
             </div>
@@ -2677,11 +2462,8 @@ function dashboardPage(root) {
             \`).join("") + (checkpoints.length > 8 ? '<span class="stage-chip muted">+' + escapeHtml(checkpoints.length - 8) + '</span>' : "")
           : '<span class="muted">无阶段</span>';
         const reviewTags = [
-          artifact.reviewStateLabel && artifact.reviewState !== "clean" ? artifact.reviewStateLabel : "",
           artifact.status === "blocked" ? "阻塞" : "",
-          artifact.changesRequestedNoteCount ? "需修改 " + artifact.changesRequestedNoteCount : "",
-          artifact.overdueNoteCount ? "逾期 " + artifact.overdueNoteCount : "",
-          artifact.openNoteCount ? "未解决 " + artifact.openNoteCount : "",
+          artifact.openNoteCount ? "未处理 " + artifact.openNoteCount : "",
           artifact.riskNoteCount ? "风险 " + artifact.riskNoteCount : "",
           artifact.actionNoteCount ? "待办 " + artifact.actionNoteCount : ""
         ].filter(Boolean);
@@ -2697,7 +2479,7 @@ function dashboardPage(root) {
               <span class="stage-cells">\${stageCells}</span>
             </span>
             <span class="matrix-review">
-              \${reviewTags.length ? reviewTags.map((tag) => '<span>' + escapeHtml(tag) + '</span>').join("") : '<span class="muted">无未解决项</span>'}
+              \${reviewTags.length ? reviewTags.map((tag) => '<span>' + escapeHtml(tag) + '</span>').join("") : '<span class="muted">无未处理项</span>'}
             </span>
           </div>
         \`;
@@ -2738,21 +2520,6 @@ function dashboardPage(root) {
           const collection = collectionResult.find((item) => item.id === activeCollection);
           chips.push("项目集：" + (collection?.title || activeCollection));
         }
-        if (activeReviewFilter) {
-          const labels = {
-            open: "Review：未解决评论",
-            risk: "Review：风险",
-            action: "Review：待办",
-            "needs-review": "Review：待 Review",
-            "changes-requested": "Review：需修改",
-            approved: "Review：已认可",
-            clean: "Review：无未解决项",
-            overdue: "Review：逾期",
-            blocked: "Review：阻塞/风险项",
-            recent: "Review：最近更新"
-          };
-          chips.push(labels[activeReviewFilter] || ("Review：" + activeReviewFilter));
-        }
         elements.activeFilters.innerHTML = chips.map((chip) => '<span>' + escapeHtml(chip) + '</span>').join("");
       }
 
@@ -2786,20 +2553,11 @@ function dashboardPage(root) {
           ? artifact.tags.map((tag) => '<span class="tag">' + highlight(tag) + '</span>').join("")
           : '<span class="tag muted">无标签</span>';
         const reviewTags = [
-          artifact.reviewStateLabel ? "Review " + artifact.reviewStateLabel : "",
-          artifact.highestSeverityLabel ? "严重度 " + artifact.highestSeverityLabel : "",
-          artifact.openNoteCount ? "未解决 " + artifact.openNoteCount : "",
-          artifact.changesRequestedNoteCount ? "需修改 " + artifact.changesRequestedNoteCount : "",
-          artifact.blockedNoteCount ? "阻塞 " + artifact.blockedNoteCount : "",
-          artifact.overdueNoteCount ? "逾期 " + artifact.overdueNoteCount : "",
+          artifact.openNoteCount ? "未处理备注 " + artifact.openNoteCount : "",
           artifact.riskNoteCount ? "风险 " + artifact.riskNoteCount : "",
           artifact.actionNoteCount ? "待办 " + artifact.actionNoteCount : "",
-          artifact.latestOpenNote ? [
-            artifact.latestOpenNote.reviewStateLabel,
-            artifact.latestOpenNote.owner ? "负责人 " + artifact.latestOpenNote.owner : "",
-            artifact.latestOpenNote.dueAt ? "到期 " + artifact.latestOpenNote.dueAt : ""
-          ].filter(Boolean).join(" · ") + "：" + artifact.latestOpenNote.text : "",
-          artifact.lastNoteAt ? "最后评论 " + formatDate(artifact.lastNoteAt) : ""
+          artifact.latestOpenNote ? noteCategoryLabel(artifact.latestOpenNote.category) + "：" + artifact.latestOpenNote.text : "",
+          artifact.lastNoteAt ? "最后备注 " + formatDate(artifact.lastNoteAt) : ""
         ].filter(Boolean);
         return \`
           <article class="artifact-card">
@@ -2811,7 +2569,7 @@ function dashboardPage(root) {
             </div>
             <div class="card-side">
               <span class="status" data-status="\${escapeHtml(artifact.status)}">\${escapeHtml(artifact.statusLabel)}</span>
-              <span class="health" data-health="\${escapeHtml(reviewStateTone(artifact.reviewState))}">\${escapeHtml(artifact.reviewStateLabel || "无未解决项")}</span>
+              \${artifact.personal?.reference ? '<span class="health" data-health="healthy">常用资料</span>' : ""}
               <small>\${escapeHtml(artifact.id)}</small>
               <div class="quick-actions">
                 <button type="button" data-personal-action="pin" data-artifact-id="\${escapeHtml(artifact.id)}">\${artifact.personal?.pinned ? "取消置顶" : "置顶"}</button>
@@ -2843,9 +2601,6 @@ function dashboardPage(root) {
         if (activeCollection) {
           params.set("collection", activeCollection);
         }
-        if (activeReviewFilter) {
-          params.set("review", activeReviewFilter);
-        }
         return params;
       }
 
@@ -2862,7 +2617,6 @@ function dashboardPage(root) {
         renderPersonalHub(searchResult.stats);
         renderOrganizeHub(searchResult.stats);
         renderReportCenter();
-        renderReviewDashboard(searchResult.stats);
         if (!preserveFacets) {
           renderFacets(searchResult.facets);
         }
@@ -2937,9 +2691,7 @@ function dashboardPage(root) {
           },
           body: JSON.stringify({
             text: text.trim(),
-            category: "general",
-            reviewState: "open",
-            severity: "low"
+            category: "general"
           })
         }).then(assertOk);
       }
@@ -3010,22 +2762,6 @@ function dashboardPage(root) {
           elements.resultSummary.textContent = "新建失败：" + error.message;
         }
       });
-      elements.reviewDashboard.addEventListener("click", (event) => {
-        const target = event.target.closest("button");
-        if (!(target instanceof HTMLButtonElement)) {
-          return;
-        }
-        if (target.id === "clearReviewFilter") {
-          activeReviewFilter = "";
-        } else if (target.dataset.reviewFilter) {
-          activeReviewFilter = activeReviewFilter === target.dataset.reviewFilter ? "" : target.dataset.reviewFilter;
-        } else {
-          return;
-        }
-        const nextUrl = currentParams().toString();
-        history.replaceState(null, "", nextUrl ? "/?" + nextUrl : withAuthPath("/"));
-        load({ preserveFacets: true }).catch(renderError);
-      });
       elements.collections.addEventListener("click", async (event) => {
         const target = event.target;
         if (target instanceof HTMLButtonElement && target.id === "clearCollection") {
@@ -3057,16 +2793,6 @@ function dashboardPage(root) {
           return;
         }
         if (!(target instanceof HTMLButtonElement) || !target.dataset.collectionId) {
-          if (!(target instanceof HTMLButtonElement) || !target.dataset.collectionReviewId) {
-            return;
-          }
-          const response = await fetch(withAuthPath("/api/collections/" + encodeURIComponent(target.dataset.collectionReviewId) + "/review-markdown"));
-          const markdown = await response.text();
-          await navigator.clipboard.writeText(markdown);
-          target.textContent = "已复制";
-          setTimeout(() => {
-            target.textContent = "复制 Review";
-          }, 1200);
           return;
         }
         const response = await fetch(withAuthPath("/api/collections/" + encodeURIComponent(target.dataset.collectionId) + "/markdown"));
@@ -3099,10 +2825,6 @@ function dashboardPage(root) {
             return;
           }
           path = "/api/reports/weekly?collection=" + encodeURIComponent(collection);
-        } else if (target.dataset.reportKind === "review") {
-          path = collection
-            ? "/api/reports/review?collection=" + encodeURIComponent(collection)
-            : "/api/reports/review";
         }
         target.disabled = true;
         try {
@@ -3237,25 +2959,30 @@ function artifactPage(artifact, pageToken = "", readOnly = false) {
           <h2>执行状态</h2>
           <span id="statusLabel" class="status" data-status="${escapeHtml(artifact.status)}">${escapeHtml(artifact.statusLabel)}</span>
         </div>
-        ${readOnly ? '<div class="readonly-banner">只读模式：可以查看和导出，不能修改状态、阶段或评论。</div>' : ""}
+        ${readOnly ? '<div class="readonly-banner">只读模式：可以查看和导出，不能修改状态、阶段或备注。</div>' : ""}
         <label class="status-control">
           <span>当前状态</span>
           <select id="statusSelect" data-write-control></select>
         </label>
         <div id="stateFeedback" class="state-feedback" role="status" aria-live="polite"></div>
         <section>
+          <h3>个人推进</h3>
+          <div class="panel-actions">
+            <button id="toggleReference" type="button" data-write-control>${artifact.personal?.reference ? "移出常用资料" : "标记常用资料"}</button>
+          </div>
+        </section>
+        <section>
           <h3>阶段</h3>
           <div id="checkpoints" class="checkpoints"></div>
         </section>
         <section>
-          <h3>评论</h3>
+          <h3>个人备注</h3>
           <form id="quickNoteForm" class="quick-note-form">
             <textarea id="quickNoteText" rows="2" placeholder="快速备注" data-write-control></textarea>
             <button type="submit" data-write-control>追加备注</button>
           </form>
           <form id="noteForm">
             <div class="note-fields">
-              <input id="noteAuthor" type="text" placeholder="作者" data-write-control>
               <select id="noteCategory" data-write-control>
                 <option value="general">一般</option>
                 <option value="question">问题</option>
@@ -3263,29 +2990,10 @@ function artifactPage(artifact, pageToken = "", readOnly = false) {
                 <option value="action">待办</option>
                 <option value="approval">认可</option>
               </select>
+              <select id="noteCheckpoint" data-write-control></select>
             </div>
-            <div class="note-fields">
-              <select id="noteReviewState" data-write-control>
-                <option value="open">待处理</option>
-                <option value="in-progress">处理中</option>
-                <option value="changes-requested">需修改</option>
-                <option value="approved">已认可</option>
-                <option value="blocked">阻塞</option>
-              </select>
-              <select id="noteSeverity" data-write-control>
-                <option value="low">低</option>
-                <option value="medium">中</option>
-                <option value="high">高</option>
-                <option value="blocker">阻塞</option>
-              </select>
-            </div>
-            <div class="note-fields">
-              <input id="noteOwner" type="text" placeholder="负责人" data-write-control>
-              <input id="noteDueAt" type="date" data-write-control>
-            </div>
-            <select id="noteCheckpoint" data-write-control></select>
-            <textarea id="noteText" rows="3" placeholder="留下评审意见" data-write-control></textarea>
-            <button type="submit" data-write-control>保存评论</button>
+            <textarea id="noteText" rows="3" placeholder="记录备注、待办或风险" data-write-control></textarea>
+            <button type="submit" data-write-control>保存备注</button>
           </form>
           <label class="note-filter">
             <span>筛选</span>
@@ -3300,7 +3008,7 @@ function artifactPage(artifact, pageToken = "", readOnly = false) {
             <a class="button-link" href="${escapeHtml(markdownHref)}" download="${escapeHtml(artifact.id)}-status.md">下载 Markdown</a>
             <a class="button-link" href="${escapeHtml(bundleHref)}" download="${escapeHtml(artifact.id)}-artifact-bundle.json">下载迁移包</a>
             <a class="button-link" href="${escapeHtml(fullBundleHref)}" download="html-artifacts-bundle.json">导出全部</a>
-            <button id="copyComments" type="button">复制评论摘要</button>
+            <button id="copyComments" type="button">复制备注摘要</button>
             <button id="copyState" type="button">复制状态 JSON</button>
           </div>
         </section>
@@ -3313,16 +3021,12 @@ function artifactPage(artifact, pageToken = "", readOnly = false) {
       const notes = document.querySelector("#notes");
       const statusLabel = document.querySelector("#statusLabel");
       const statusSelect = document.querySelector("#statusSelect");
+      const toggleReference = document.querySelector("#toggleReference");
       const stateFeedback = document.querySelector("#stateFeedback");
       const noteForm = document.querySelector("#noteForm");
       const quickNoteForm = document.querySelector("#quickNoteForm");
       const quickNoteText = document.querySelector("#quickNoteText");
-      const noteAuthor = document.querySelector("#noteAuthor");
       const noteCategory = document.querySelector("#noteCategory");
-      const noteReviewState = document.querySelector("#noteReviewState");
-      const noteSeverity = document.querySelector("#noteSeverity");
-      const noteOwner = document.querySelector("#noteOwner");
-      const noteDueAt = document.querySelector("#noteDueAt");
       const noteCheckpoint = document.querySelector("#noteCheckpoint");
       const noteFilter = document.querySelector("#noteFilter");
       const noteText = document.querySelector("#noteText");
@@ -3338,8 +3042,6 @@ function artifactPage(artifact, pageToken = "", readOnly = false) {
         action: "待办",
         approval: "认可"
       };
-      const noteReviewStateLabels = ${JSON.stringify(NOTE_REVIEW_STATE_LABELS)};
-      const severityLabels = ${JSON.stringify(SEVERITY_LABELS)};
       const authToken = ${JSON.stringify(pageToken)} || new URLSearchParams(location.search).get("token") || "";
       const readOnly = ${JSON.stringify(readOnly)};
       let state = null;
@@ -3377,34 +3079,25 @@ function artifactPage(artifact, pageToken = "", readOnly = false) {
         return noteCategoryLabels[category] || category || "一般";
       }
 
-      function noteReviewStateLabel(reviewState) {
-        return noteReviewStateLabels[reviewState] || reviewState || "待处理";
-      }
-
-      function severityLabel(severity) {
-        return severityLabels[severity] || severity || "";
-      }
-
       function isClosedNote(item) {
         return item.resolved || item.reviewState === "resolved" || item.reviewState === "approved";
       }
 
-      function isOverdue(dueAt) {
-        return /^\\d{4}-\\d{2}-\\d{2}$/.test(dueAt || "") && dueAt < new Date().toISOString().slice(0, 10);
-      }
-
       function checkpointReviewSummary(checkpointId) {
         const openNotes = state.notes.filter((item) => item.checkpointId === checkpointId && !isClosedNote(item));
-        if (openNotes.some((item) => item.reviewState === "blocked" || item.severity === "blocker")) {
-          return ["阻塞", openNotes.length];
+        if (openNotes.some((item) => item.category === "risk" || item.reviewState === "blocked" || item.severity === "blocker")) {
+          return ["风险", openNotes.length];
         }
-        if (openNotes.some((item) => item.reviewState === "changes-requested")) {
-          return ["需修改", openNotes.length];
+        if (openNotes.some((item) => item.category === "action")) {
+          return ["待办", openNotes.length];
+        }
+        if (openNotes.some((item) => item.category === "question")) {
+          return ["问题", openNotes.length];
         }
         if (openNotes.length) {
-          return ["待 Review", openNotes.length];
+          return ["待处理", openNotes.length];
         }
-        return ["无未解决项", 0];
+        return ["无未处理项", 0];
       }
 
       function renderNoteControls() {
@@ -3414,15 +3107,12 @@ function artifactPage(artifact, pageToken = "", readOnly = false) {
         noteCheckpoint.innerHTML = '<option value="">不关联阶段</option>' + checkpointOptions;
         const selectedFilter = noteFilter.value || "open";
         noteFilter.innerHTML = [
-          '<option value="open">未解决评论</option>',
-          '<option value="all">全部评论</option>',
-          '<option value="resolved">已解决评论</option>',
-          '<option value="reviewState:changes-requested">状态：需修改</option>',
-          '<option value="reviewState:blocked">状态：阻塞</option>',
-          '<option value="reviewState:approved">状态：已认可</option>',
-          '<option value="severity:blocker">严重度：阻塞</option>',
-          '<option value="severity:high">严重度：高</option>',
-          '<option value="overdue">逾期评论</option>',
+          '<option value="open">未处理备注</option>',
+          '<option value="all">全部备注</option>',
+          '<option value="resolved">已处理备注</option>',
+          '<option value="category:risk">风险</option>',
+          '<option value="category:action">待办</option>',
+          '<option value="category:question">问题</option>',
           ...state.checkpoints.map((item) => \`<option value="checkpoint:\${escapeHtml(item.id)}">阶段：\${escapeHtml(item.title)}</option>\`)
         ].join("");
         noteFilter.value = [...noteFilter.options].some((option) => option.value === selectedFilter) ? selectedFilter : "open";
@@ -3441,6 +3131,7 @@ function artifactPage(artifact, pageToken = "", readOnly = false) {
         statusLabel.textContent = statusLabels[status] || status;
         statusLabel.dataset.status = status;
         statusSelect.value = status;
+        toggleReference.textContent = state.personal?.reference ? "移出常用资料" : "标记常用资料";
         renderNoteControls();
         if (!state.checkpoints.length) {
           checkpoints.innerHTML = '<div class="empty compact">这个 artifact 没有配置阶段，适合作为资料查看和备注沉淀。</div>';
@@ -3464,37 +3155,34 @@ function artifactPage(artifact, pageToken = "", readOnly = false) {
 
         const visibleNotes = filteredNotes();
         if (!state.notes.length) {
-          notes.innerHTML = '<div class="empty compact">暂无评论。可以记录 review 结论、阻塞点或下一步动作。</div>';
+          notes.innerHTML = '<div class="empty compact">暂无备注。可以记录风险、待办或下一步动作。</div>';
         } else if (!visibleNotes.length) {
-          notes.innerHTML = '<div class="empty compact">当前筛选下没有评论。</div>';
+          notes.innerHTML = '<div class="empty compact">当前筛选下没有备注。</div>';
         } else {
           notes.innerHTML = visibleNotes.slice().reverse().map((item) => \`
             <article class="note \${item.resolved ? "resolved" : ""}">
               <div class="note-meta">
                 <span>\${escapeHtml(noteCategoryLabel(item.category))}</span>
-                <span>\${escapeHtml(noteReviewStateLabel(item.reviewState))}</span>
-                <span>\${escapeHtml(severityLabel(item.severity) || "无严重度")}</span>
-                \${item.owner ? '<span>负责人 ' + escapeHtml(item.owner) + '</span>' : ""}
-                \${item.dueAt ? '<span>' + escapeHtml((isOverdue(item.dueAt) ? "逾期 " : "到期 ") + item.dueAt) + '</span>' : ""}
+                <span>\${isClosedNote(item) ? "已处理" : "待处理"}</span>
                 \${item.author ? '<span>' + escapeHtml(item.author) + '</span>' : ""}
                 \${item.checkpointId ? '<span>' + escapeHtml(checkpointTitle(item.checkpointId) || item.checkpointId) + '</span>' : '<span>全局</span>'}
                 <time>\${escapeHtml(formatDate(item.at))}</time>
               </div>
               <p>\${escapeHtml(item.text)}</p>
               <div class="note-edit">
-                <select data-note-edit="\${escapeHtml(item.id)}" data-field="reviewState" data-write-control>
-                  \${Object.entries(noteReviewStateLabels).map(([value, label]) => '<option value="' + escapeHtml(value) + '" ' + (item.reviewState === value ? "selected" : "") + '>' + escapeHtml(label) + '</option>').join("")}
+                <textarea data-note-edit="\${escapeHtml(item.id)}" data-field="text" rows="2" data-write-control>\${escapeHtml(item.text)}</textarea>
+                <select data-note-edit="\${escapeHtml(item.id)}" data-field="category" data-write-control>
+                  \${Object.entries(noteCategoryLabels).map(([value, label]) => '<option value="' + escapeHtml(value) + '" ' + (item.category === value ? "selected" : "") + '>' + escapeHtml(label) + '</option>').join("")}
                 </select>
-                <select data-note-edit="\${escapeHtml(item.id)}" data-field="severity" data-write-control>
-                  \${Object.entries(severityLabels).map(([value, label]) => '<option value="' + escapeHtml(value) + '" ' + (item.severity === value ? "selected" : "") + '>' + escapeHtml(label) + '</option>').join("")}
+                <select data-note-edit="\${escapeHtml(item.id)}" data-field="checkpointId" data-write-control>
+                  <option value="">不关联阶段</option>
+                  \${state.checkpoints.map((checkpoint) => '<option value="' + escapeHtml(checkpoint.id) + '" ' + (item.checkpointId === checkpoint.id ? "selected" : "") + '>' + escapeHtml(checkpoint.title) + '</option>').join("")}
                 </select>
-                <input data-note-edit="\${escapeHtml(item.id)}" data-field="owner" type="text" value="\${escapeHtml(item.owner || "")}" placeholder="负责人" data-write-control>
-                <input data-note-edit="\${escapeHtml(item.id)}" data-field="dueAt" type="date" value="\${escapeHtml(item.dueAt || "")}" data-write-control>
                 <button type="button" data-note-id="\${escapeHtml(item.id)}" data-note-action="update" data-write-control>保存</button>
               </div>
               <div class="note-actions">
-                <span>\${isClosedNote(item) ? "已关闭" + (item.resolvedAt ? " · " + escapeHtml(formatDate(item.resolvedAt)) : "") : "未解决"}</span>
-                <button type="button" data-note-id="\${escapeHtml(item.id)}" data-note-action="\${item.resolved ? "reopen" : "resolve"}" data-write-control>\${item.resolved ? "重新打开" : "标记解决"}</button>
+                <span>\${isClosedNote(item) ? "已处理" + (item.resolvedAt ? " · " + escapeHtml(formatDate(item.resolvedAt)) : "") : "待处理"}</span>
+                <button type="button" data-note-id="\${escapeHtml(item.id)}" data-note-action="\${isClosedNote(item) ? "reopen" : "resolve"}" data-write-control>\${isClosedNote(item) ? "重新打开" : "标记处理"}</button>
               </div>
             </article>
           \`).join("");
@@ -3506,7 +3194,7 @@ function artifactPage(artifact, pageToken = "", readOnly = false) {
         for (const element of document.querySelectorAll("[data-write-control]")) {
           element.disabled = readOnly;
         }
-        noteText.placeholder = readOnly ? "只读模式下不能新增评论" : "留下评审意见";
+        noteText.placeholder = readOnly ? "只读模式下不能新增备注" : "记录备注、待办或风险";
       }
 
       function filteredNotes() {
@@ -3521,16 +3209,9 @@ function artifactPage(artifact, pageToken = "", readOnly = false) {
           const checkpointId = filter.slice("checkpoint:".length);
           return state.notes.filter((item) => item.checkpointId === checkpointId);
         }
-        if (filter.startsWith("reviewState:")) {
-          const reviewState = filter.slice("reviewState:".length);
-          return state.notes.filter((item) => item.reviewState === reviewState);
-        }
-        if (filter.startsWith("severity:")) {
-          const severity = filter.slice("severity:".length);
-          return state.notes.filter((item) => item.severity === severity);
-        }
-        if (filter === "overdue") {
-          return state.notes.filter((item) => !isClosedNote(item) && isOverdue(item.dueAt));
+        if (filter.startsWith("category:")) {
+          const category = filter.slice("category:".length);
+          return state.notes.filter((item) => item.category === category);
         }
         return state.notes.filter((item) => !isClosedNote(item));
       }
@@ -3697,6 +3378,35 @@ function artifactPage(artifact, pageToken = "", readOnly = false) {
         }
       });
 
+      toggleReference.addEventListener("click", async () => {
+        if (readOnly) {
+          setFeedback("只读模式下不能修改常用资料标记。", "error");
+          return;
+        }
+        if (!state) {
+          setFeedback("状态还没有加载完成。", "error");
+          return;
+        }
+        toggleReference.disabled = true;
+        try {
+          state = await fetchJson(\`/api/artifacts/\${encodeURIComponent(artifactId)}/personal\`, {
+            method: "PATCH",
+            headers: {
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              reference: !state.personal?.reference
+            })
+          });
+          renderState();
+          setFeedback(state.personal?.reference ? "已标记为常用资料。" : "已移出常用资料。");
+        } catch (error) {
+          setFeedback(error.message, "error");
+        } finally {
+          toggleReference.disabled = false;
+        }
+      });
+
       quickNoteForm.addEventListener("submit", async (event) => {
         event.preventDefault();
         if (readOnly) {
@@ -3715,9 +3425,7 @@ function artifactPage(artifact, pageToken = "", readOnly = false) {
             },
             body: JSON.stringify({
               text,
-              category: "general",
-              reviewState: "open",
-              severity: "low"
+              category: "general"
             })
           });
           quickNoteText.value = "";
@@ -3731,7 +3439,7 @@ function artifactPage(artifact, pageToken = "", readOnly = false) {
       noteForm.addEventListener("submit", async (event) => {
         event.preventDefault();
         if (readOnly) {
-          setFeedback("只读模式下不能新增评论。", "error");
+          setFeedback("只读模式下不能新增备注。", "error");
           return;
         }
         if (!state) {
@@ -3750,20 +3458,13 @@ function artifactPage(artifact, pageToken = "", readOnly = false) {
             },
             body: JSON.stringify({
               text,
-              author: noteAuthor.value.trim(),
               category: noteCategory.value,
-              checkpointId: noteCheckpoint.value,
-              reviewState: noteReviewState.value,
-              severity: noteSeverity.value,
-              owner: noteOwner.value.trim(),
-              dueAt: noteDueAt.value
+              checkpointId: noteCheckpoint.value
             })
           });
           noteText.value = "";
-          noteOwner.value = "";
-          noteDueAt.value = "";
           renderState();
-          setFeedback("评论已保存。");
+          setFeedback("备注已保存。");
           setTimeout(() => {
             setFeedback("");
           }, 1400);
@@ -3784,7 +3485,7 @@ function artifactPage(artifact, pageToken = "", readOnly = false) {
           return;
         }
         if (readOnly) {
-          setFeedback("只读模式下不能修改评论状态。", "error");
+          setFeedback("只读模式下不能修改备注。", "error");
           return;
         }
         const action = target.dataset.noteAction;
@@ -3808,7 +3509,7 @@ function artifactPage(artifact, pageToken = "", readOnly = false) {
             });
           }
           renderState();
-          setFeedback(action === "resolve" ? "评论已解决。" : action === "reopen" ? "评论已重新打开。" : "评论已更新。");
+          setFeedback(action === "resolve" ? "备注已处理。" : action === "reopen" ? "备注已重新打开。" : "备注已更新。");
           setTimeout(() => {
             setFeedback("");
           }, 1400);
@@ -3837,7 +3538,7 @@ function artifactPage(artifact, pageToken = "", readOnly = false) {
         }
 
         if (state.notes.length) {
-          lines.push("", "## 评论");
+          lines.push("", "## 个人备注");
           lines.push(...commentsMarkdownLines());
         }
 
@@ -3863,12 +3564,8 @@ function artifactPage(artifact, pageToken = "", readOnly = false) {
           lines.push("### " + title);
           for (const item of items) {
             const meta = [
-              item.resolved ? "已解决" : "未解决",
-              noteReviewStateLabel(item.reviewState),
-              severityLabel(item.severity) ? "严重度 " + severityLabel(item.severity) : "",
+              isClosedNote(item) ? "已处理" : "待处理",
               noteCategoryLabel(item.category),
-              item.owner ? "负责人 " + item.owner : "",
-              item.dueAt ? "到期 " + item.dueAt : "",
               item.author || "",
               item.at ? formatDate(item.at) : ""
             ].filter(Boolean).join(" / ");
@@ -3896,11 +3593,11 @@ function artifactPage(artifact, pageToken = "", readOnly = false) {
           setFeedback("状态还没有加载完成。", "error");
           return;
         }
-        const lines = ["# " + artifactTitle + " 评论摘要", "", ...commentsMarkdownLines()];
+        const lines = ["# " + artifactTitle + " 备注摘要", "", ...commentsMarkdownLines()];
         await navigator.clipboard.writeText(lines.join("\\n"));
         copyComments.textContent = "已复制";
         setTimeout(() => {
-          copyComments.textContent = "复制评论摘要";
+          copyComments.textContent = "复制备注摘要";
         }, 1200);
       });
 
@@ -5026,16 +4723,6 @@ async function createApp(store, options = {}) {
     return reply.type("text/markdown; charset=utf-8").send(markdown);
   });
 
-  app.get("/api/reports/review", async (request, reply) => {
-    const markdown = await store.getReviewReportMarkdown(String(request.query?.collection || ""));
-    if (markdown === null) {
-      return reply.code(404).send({
-        error: "Collection not found."
-      });
-    }
-    return reply.type("text/markdown; charset=utf-8").send(markdown);
-  });
-
   app.get("/api/reports/global", async (request, reply) => {
     const markdown = await store.getGlobalReportMarkdown();
     return reply.type("text/markdown; charset=utf-8").send(markdown);
@@ -5051,16 +4738,6 @@ async function createApp(store, options = {}) {
 
   app.get("/api/collections/:id/markdown", async (request, reply) => {
     const markdown = await store.getCollectionMarkdown(request.params.id);
-    if (markdown === null) {
-      return reply.code(404).send({
-        error: "Collection not found."
-      });
-    }
-    return reply.type("text/markdown; charset=utf-8").send(markdown);
-  });
-
-  app.get("/api/collections/:id/review-markdown", async (request, reply) => {
-    const markdown = await store.getCollectionReviewMarkdown(request.params.id);
     if (markdown === null) {
       return reply.code(404).send({
         error: "Collection not found."
