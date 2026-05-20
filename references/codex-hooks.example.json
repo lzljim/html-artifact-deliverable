@@ -1,0 +1,28 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\path\\to\\html-artifact-deliverable\\scripts\\codex-hooks\\feishu-prompt-capture.cmd",
+            "timeout": 5,
+            "statusMessage": "Capturing Codex task title"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\path\\to\\html-artifact-deliverable\\scripts\\codex-hooks\\feishu-stop-notify.cmd",
+            "timeout": 10,
+            "statusMessage": "Sending Feishu notification"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -7,7 +7,7 @@
     "start": "node scripts/artifact-server.mjs",
     "dev": "node --watch scripts/artifact-server.mjs",
     "test": "node --test tests/*.test.mjs",
-    "check": "node --check scripts/artifact-server.mjs && node --check scripts/publish-artifact.mjs && node --check scripts/import-artifact-bundle.mjs && npm test"
+    "check": "node --check scripts/artifact-server.mjs && node --check scripts/publish-artifact.mjs && node --check scripts/import-artifact-bundle.mjs && node --check scripts/codex-hooks/feishu-hook-lib.mjs && node --check scripts/codex-hooks/feishu-prompt-capture.mjs && node --check scripts/codex-hooks/feishu-stop-notify.mjs && npm test"
   },
   "dependencies": {
     "@fastify/static": "^9.1.3",

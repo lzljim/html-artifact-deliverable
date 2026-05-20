@@ -103,6 +103,53 @@ npm run check
 
 `npm run check` 会执行语法检查和 `node:test` 回归用例。提交服务或发布脚本改动前请先运行。
 
+## Codex 完成后飞书通知
+
+仓库提供 Codex hooks 脚本，用来在每轮会话完成后发送飞书机器人通知。脚本只依赖 Node.js，不会把 webhook、secret、hook 状态或日志写入仓库。
+
+1. 在 Codex 配置里启用 hooks：
+
+```toml
+[features]
+codex_hooks = true
+```
+
+2. 参考 `references/codex-hooks.example.json` 配置本机 `~/.codex/hooks.json`，把 `command` 改成当前仓库里的实际路径：
+
+```text
+<repo>\scripts\codex-hooks\feishu-prompt-capture.cmd
+<repo>\scripts\codex-hooks\feishu-stop-notify.cmd
+```
+
+3. 配置飞书机器人环境变量：
+
+```powershell
+[Environment]::SetEnvironmentVariable("FEISHU_WEBHOOK_URL", "<feishu-webhook-url>", "User")
+[Environment]::SetEnvironmentVariable("FEISHU_WEBHOOK_SECRET", "<optional-secret>", "User")
+```
+
+可选配置：
+
+```powershell
+[Environment]::SetEnvironmentVariable("HTML_ARTIFACT_SERVER_URL", "http://127.0.0.1:8787/", "User")
+[Environment]::SetEnvironmentVariable("HTML_ARTIFACT_SERVER_TOKEN", "<optional-token>", "User")
+[Environment]::SetEnvironmentVariable("CODEX_HOOK_STATE_DIR", "$HOME\.codex\hooks\state", "User")
+[Environment]::SetEnvironmentVariable("CODEX_HOOK_LOG_FILE", "$HOME\.codex\hooks\feishu_hook.log", "User")
+```
+
+`UserPromptSubmit` 会把本轮 prompt 临时写到 `CODEX_HOOK_STATE_DIR`，`Stop` 会在结束时读取 payload 或临时状态，发送包含任务摘要、cwd、model、permission、session、turn、结果摘要和 artifact 链接的飞书消息。任何失败都会返回 `{"continue":true}`，不会阻塞 Codex。
+
+本地验证可以启用 dry-run，不会真实调用飞书：
+
+```powershell
+$env:CODEX_HOOK_DRY_RUN = "1"
+'{"session_id":"dry-session","turn_id":"1","prompt":"测试飞书 hook"}' | node scripts/codex-hooks/feishu-prompt-capture.mjs
+'{"session_id":"dry-session","turn_id":"1","cwd":"C:\\work\\repo","model":"gpt-5","permission_mode":"never","last_assistant_message":"完成 http://127.0.0.1:8787/artifacts/demo"}' | node scripts/codex-hooks/feishu-stop-notify.mjs
+Remove-Item Env:\CODEX_HOOK_DRY_RUN
+```
+
+旧的 `~/.codex/hooks/*.ps1` 可以迁移为这里的 Node 脚本；`~/.codex/hooks.json` 仍然是本机私有配置，不应提交真实 webhook 或 secret。
+
 ## 状态、归档和导出
 
 详情页可以修改状态、勾选 checkpoints、保存阶段备注、记录个人备注，并复制或下载当前状态报告。首页按个人任务中枢组织 artifact，用来快速判断当前重点、最近继续、阻塞/待处理和可收尾内容。
