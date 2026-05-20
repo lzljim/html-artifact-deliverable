@@ -273,6 +273,7 @@ GET  /api/health
 GET  /api/artifacts
 GET  /api/artifacts/search
 GET  /api/export
+POST /api/import/preview
 POST /api/import
 GET  /api/reports/weekly
 GET  /api/reports/global
@@ -297,7 +298,7 @@ The dashboard groups collection artifacts and shows aggregate progress. Collecti
 
 Artifact lists are work-first: status groups render as blocked, in-progress, draft, done, archived, then unknown statuses. The sort selector applies inside those status groups, so "updated desc" means current work stays ahead while each group is ordered by latest update.
 
-The dashboard also includes a personal task hub for current focus, common references, recently opened artifacts, blocked/pending work, and items ready to close or archive. Artifact cards expose personal actions such as pin, later, mark done, archive, quick note, and quick checkpoint.
+The dashboard also includes a personal task hub for current focus, common references, recently opened artifacts, blocked/pending work, and items ready to close or archive. Artifact cards expose personal actions such as pin, later, mark done, archive, quick note, and quick checkpoint. The organize view also flags lifecycle conflicts such as archived artifacts still marked as common references or current focus.
 
 The artifact detail page lets a personal user edit status, toggle checkpoints, maintain checkpoint notes, add personal notes, filter notes by category or phase, resolve or reopen notes, mark an artifact as common reference material, and copy or download the current state or note summary as JSON/Markdown.
 
@@ -306,6 +307,7 @@ Artifact-level export endpoints:
 - `GET /api/artifacts/:id/markdown`: returns a Markdown status report generated from `artifact.json` plus `state.json`, suitable for PRs and weekly reports.
 - `GET /api/artifacts/:id/export`: returns a JSON migration bundle with artifact metadata, normalized state, `index.html` content, and `exportedAt`.
 - `GET /api/export`: returns a full-root migration bundle with `collection.json` plus every artifact's `index.html`, `artifact.json`, and normalized `state.json`.
+- `POST /api/import/preview`: previews a full-root bundle before import, returning new artifact count, conflict count, conflict ids, and incoming collection count.
 - `POST /api/import`: imports a full-root migration bundle into the current artifact root. It is a write operation, so read-only tokens receive `403`.
 
 MVP storage should be JSON files, not a database. Use atomic writes for `state.json` when possible.

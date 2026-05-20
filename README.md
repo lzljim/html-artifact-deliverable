@@ -118,7 +118,8 @@ npm run check
 - `GET /api/artifacts/<id>/markdown` 会从 `state.json` 生成可贴到周报或个人记录的 Markdown 状态报告。
 - `GET /api/artifacts/<id>/export` 会导出包含 `artifact.json` 视图、`state.json` 和 `index.html` 内容的 JSON 迁移包。
 - 首页右上角“导出全部”会请求 `GET /api/export`，一次性导出 `collection.json` 和所有 artifact 的 HTML、元数据、状态。
-- 首页右上角“导入全部”可以选择上述 JSON 包，写入当前 artifact root。只读 token 不能导入。
+- 首页右上角“导入全部”可以选择上述 JSON 包，导入前会预览新增 artifact、同名冲突和项目集数量；如果存在同名冲突，只有确认后才覆盖导入。只读 token 不能导入。
+- 整理视图会提示长期未打开、已完成未归档、无项目集、无阶段，以及“已归档但仍是资料/置顶”等生命周期语义冲突。
 
 在另一台机器恢复全部 artifact：
 

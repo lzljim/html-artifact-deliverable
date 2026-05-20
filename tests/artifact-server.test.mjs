@@ -525,6 +525,15 @@ describe("artifact server", () => {
         reference: true
       }
     });
+    await writeArtifact("archived-focus", {
+      title: "Archived Focus"
+    }, {
+      status: "archived",
+      personal: {
+        pinned: true,
+        priority: "focus"
+      }
+    });
     const referenceSearch = await injectJson({
       method: "GET",
       url: "/api/artifacts/search"
@@ -535,6 +544,39 @@ describe("artifact server", () => {
     assert.ok(!referenceSearch.stats.organizeSections.doneOpen.some((item) => item.id === "reference-plan"));
     assert.ok(!referenceSearch.stats.personalSections.closing.some((item) => item.id === "reference-plan"));
     assert.ok(!referenceSearch.stats.personalSections.reference.some((item) => item.id === "archived-reference"));
+    assert.ok(referenceSearch.stats.organizeSections.archivedReference.some((item) => item.id === "archived-reference"));
+    assert.ok(referenceSearch.stats.organizeSections.archivedFocus.some((item) => item.id === "archived-focus"));
+
+    const unreferenced = await injectJson({
+      method: "POST",
+      url: "/api/artifacts/bulk",
+      headers: {
+        "content-type": "application/json"
+      },
+      payload: {
+        ids: ["archived-reference"],
+        action: "unreference"
+      }
+    });
+    assert.equal(unreferenced.updatedCount, 1);
+    const archivedReferenceState = await injectJson({
+      method: "GET",
+      url: "/api/artifacts/archived-reference/state"
+    });
+    assert.equal(archivedReferenceState.personal.reference, false);
+
+    const archivedFocusUnpinned = await injectJson({
+      method: "POST",
+      url: "/api/artifacts/bulk",
+      headers: {
+        "content-type": "application/json"
+      },
+      payload: {
+        ids: ["archived-focus"],
+        action: "unpin"
+      }
+    });
+    assert.equal(archivedFocusUnpinned.updatedCount, 1);
 
     await writeArtifact("bulk-reference-plan", {
       title: "Bulk Reference Plan",
@@ -630,6 +672,12 @@ describe("artifact server", () => {
       url: "/api/export"
     });
     assert.equal(bundle.artifacts.find((item) => item.id === "personal-plan").state.status, "archived");
+
+    const archivedFocusSearch = await injectJson({
+      method: "GET",
+      url: "/api/artifacts/search"
+    });
+    assert.ok(!archivedFocusSearch.stats.organizeSections.archivedFocus.some((item) => item.id === "personal-plan"));
   });
 
   it("keeps current work ahead of done artifacts while sorting inside status groups", async () => {
@@ -1087,6 +1135,20 @@ describe("artifact server", () => {
       });
 
       const bundle = await createStore(sourceRoot).getAllArtifactsBundle();
+      const preview = await injectJson({
+        method: "POST",
+        url: "/api/import/preview",
+        headers: {
+          "content-type": "application/json"
+        },
+        payload: {
+          bundle
+        }
+      });
+      assert.equal(preview.artifactCount, 1);
+      assert.equal(preview.newCount, 1);
+      assert.equal(preview.conflictCount, 0);
+
       const imported = await injectJson({
         method: "POST",
         url: "/api/import",
@@ -1105,6 +1167,20 @@ describe("artifact server", () => {
       });
       assert.equal(artifact.title, "Imported Plan");
       assert.equal(artifact.status, "done");
+
+      const conflictPreview = await injectJson({
+        method: "POST",
+        url: "/api/import/preview",
+        headers: {
+          "content-type": "application/json"
+        },
+        payload: {
+          bundle
+        }
+      });
+      assert.equal(conflictPreview.newCount, 0);
+      assert.equal(conflictPreview.conflictCount, 1);
+      assert.deepEqual(conflictPreview.conflicts.map((item) => item.id), ["imported-plan"]);
 
       const duplicate = await injectJson({
         method: "POST",

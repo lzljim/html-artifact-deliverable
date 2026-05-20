@@ -106,6 +106,7 @@ Routes:
   POST /api/artifacts
   POST /api/artifacts/bulk
   GET  /api/export
+  POST /api/import/preview
   POST /api/import
   GET  /api/reports/weekly
   GET  /api/reports/global
@@ -736,6 +737,38 @@ function createStore(root) {
     });
   }
 
+  async function previewImportBundle(payload) {
+    const bundle = validateFullBundle(payload?.bundle || payload);
+    await ensureRoot();
+    const existingIds = new Set((await listArtifacts()).map((artifact) => artifact.id));
+    const artifacts = bundle.artifacts.map((item) => {
+      const id = String(item?.id || item?.artifact?.id || "");
+      if (!isArtifactId(id)) {
+        const error = new Error(`Invalid artifact id in bundle: ${id}`);
+        error.statusCode = 400;
+        throw error;
+      }
+      return {
+        id,
+        title: String(item?.artifact?.title || id),
+        exists: existingIds.has(id)
+      };
+    });
+    const conflicts = artifacts.filter((item) => item.exists);
+    const incomingCollections = Array.isArray(bundle.collectionConfig?.collections)
+      ? bundle.collectionConfig.collections.filter((item) => item?.id)
+      : [];
+    return {
+      format: bundle.format,
+      artifactCount: artifacts.length,
+      newCount: artifacts.length - conflicts.length,
+      conflictCount: conflicts.length,
+      collectionCount: incomingCollections.length,
+      conflicts: conflicts.slice(0, 20),
+      newArtifacts: artifacts.filter((item) => !item.exists).slice(0, 20)
+    };
+  }
+
   async function putState(id, state) {
     const normalized = normalizeState(state);
     await writeJsonAtomic(stateJsonPath(id), normalized);
@@ -967,6 +1000,11 @@ function createStore(root) {
           reference: true
         });
         updated.push(id);
+      } else if (action === "unreference") {
+        await updatePersonal(id, {
+          reference: false
+        });
+        updated.push(id);
       } else if (action === "collection") {
         const metadata = await readJson(artifactJsonPath(id), {
           id
@@ -1011,6 +1049,7 @@ function createStore(root) {
     getArtifactBundle,
     getAllArtifactsBundle,
     importAllArtifactsBundle,
+    previewImportBundle,
     createArtifact,
     getState,
     putState,
@@ -1517,6 +1556,15 @@ function normalizeMarkdown(lines) {
   return `${lines.join("\n").replace(/\n{3,}/g, "\n\n").trim()}\n`;
 }
 
+function validateFullBundle(raw) {
+  if (raw?.format !== "html-artifact-deliverable.all.v1" || !Array.isArray(raw.artifacts)) {
+    const error = new Error("Unsupported bundle format. Expected html-artifact-deliverable.all.v1.");
+    error.statusCode = 400;
+    throw error;
+  }
+  return raw;
+}
+
 function compareArtifactsForReview(left, right) {
   return (right.reviewPriority || 0) - (left.reviewPriority || 0)
     || String(right.latestOpenNote?.at || right.lastNoteAt || right.updatedAt || "").localeCompare(String(left.latestOpenNote?.at || left.lastNoteAt || left.updatedAt || ""))
@@ -1924,6 +1972,7 @@ function personalPriorityRank(priority) {
 
 function buildOrganizeSections(artifacts) {
   const active = artifacts.filter((item) => item.status !== "archived");
+  const archived = artifacts.filter((item) => item.status === "archived");
   const staleSince = Date.now() - 14 * 24 * 60 * 60 * 1000;
   const summarize = (items) => items.slice(0, 8).map((item) => ({
     id: item.id,
@@ -1935,7 +1984,9 @@ function buildOrganizeSections(artifacts) {
     stale: summarize(active.filter((item) => Date.parse(item.personal?.lastOpenedAt || item.updatedAt || "") < staleSince)),
     doneOpen: summarize(active.filter((item) => item.status === "done" && !item.personal?.reference)),
     noCollection: summarize(active.filter((item) => !item.collection?.id)),
-    noCheckpoint: summarize(active.filter((item) => item.checkpointCount === 0))
+    noCheckpoint: summarize(active.filter((item) => item.checkpointCount === 0)),
+    archivedReference: summarize(archived.filter((item) => item.personal?.reference)),
+    archivedFocus: summarize(archived.filter((item) => item.personal?.pinned || item.personal?.priority === "focus"))
   };
 }
 
@@ -2217,7 +2268,9 @@ function dashboardPage(root) {
           ["doneOpen", "已完成未归档", "可批量归档或设为常用资料", ["archive", "reference"]],
           ["stale", "较久未继续", "超过 14 天未打开或更新", ""],
           ["noCollection", "未归入项目集", "可批量加入项目集", "collection"],
-          ["noCheckpoint", "无阶段", "适合补初始阶段", ""]
+          ["noCheckpoint", "无阶段", "适合补初始阶段", ""],
+          ["archivedReference", "归档但仍是资料", "归档会默认隐藏，可批量移出资料", "unreference"],
+          ["archivedFocus", "归档但仍置顶", "归档项不应占用当前重点", "unpin"]
         ];
         elements.organizeHub.innerHTML = \`
           <div class="section-head">
@@ -2265,6 +2318,12 @@ function dashboardPage(root) {
         }
         if (action === "reference") {
           return "设为资料";
+        }
+        if (action === "unreference") {
+          return "移出资料";
+        }
+        if (action === "unpin") {
+          return "取消置顶";
         }
         return "加入项目集";
       }
@@ -2631,6 +2690,28 @@ function dashboardPage(root) {
         elements.importAll.textContent = "导入中...";
         try {
           const bundle = JSON.parse(await file.text());
+          const previewResponse = await fetch(withAuthPath("/api/import/preview"), {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              bundle
+            })
+          });
+          const preview = await previewResponse.json().catch(() => ({}));
+          if (!previewResponse.ok) {
+            throw new Error(preview.error || "导入预览失败。");
+          }
+          const conflictText = preview.conflictCount
+            ? "，" + preview.conflictCount + " 个会覆盖已有 artifact"
+            : "";
+          elements.resultSummary.textContent = "导入预览：" + preview.newCount + " 个新增" + conflictText + "，" + preview.collectionCount + " 个项目集。";
+          const confirmed = window.confirm("导入预览：\\n新增 artifact：" + preview.newCount + "\\n同名冲突：" + preview.conflictCount + "\\n项目集：" + preview.collectionCount + (preview.conflictCount ? "\\n\\n继续会覆盖同名 artifact。" : "\\n\\n确认导入？"));
+          if (!confirmed) {
+            elements.importAll.textContent = "导入全部";
+            return;
+          }
           const response = await fetch(withAuthPath("/api/import"), {
             method: "POST",
             headers: {
@@ -2638,7 +2719,7 @@ function dashboardPage(root) {
             },
             body: JSON.stringify({
               bundle,
-              overwrite: false
+              overwrite: preview.conflictCount > 0
             })
           });
           const result = await response.json().catch(() => ({}));
@@ -4709,6 +4790,11 @@ async function createApp(store, options = {}) {
 
   app.post("/api/import", async (request, reply) => {
     const result = await store.importAllArtifactsBundle(request.body);
+    return reply.send(result);
+  });
+
+  app.post("/api/import/preview", async (request, reply) => {
+    const result = await store.previewImportBundle(request.body);
     return reply.send(result);
   });
 

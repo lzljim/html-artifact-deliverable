@@ -92,7 +92,7 @@ Default behavior:
 - Collections derive a health state (healthy, risk, or blocked) and the dashboard includes a collection progress matrix plus sorting by health, completion rate, blocked count, and unresolved notes.
 - Archived artifacts use `state.status = "archived"`; they are hidden from default dashboard search but remain available through direct URLs, collections, and explicit archive filters.
 - Single artifacts can be exported as Markdown status reports or JSON migration bundles through the detail page and API.
-- The dashboard provides one-click full export through `GET /api/export` and full import through `POST /api/import`; restore from CLI with `node scripts/import-artifact-bundle.mjs --bundle <file.json>`.
+- The dashboard provides one-click full export through `GET /api/export`, import preview through `POST /api/import/preview`, and full import through `POST /api/import`; restore from CLI with `node scripts/import-artifact-bundle.mjs --bundle <file.json>`.
 - Health check: `GET /api/health`
 
 Use explicit flags when needed:
